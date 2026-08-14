@@ -7,19 +7,26 @@ const path = (p) => new URL(`../extension/${p}`, import.meta.url);
 const read = (p) => readFileSync(path(p), 'utf8');
 const manifest = JSON.parse(read('manifest.json'));
 
-// Every reference a stylesheet makes: url() targets first, then any quoted
-// http(s) string, which is how image-set() and friends carry a URL with no
-// url() token at all. A stylesheet is a declarative artifact this repo owns,
-// and the schemes of its references are the contract: anything but data: is a
-// request the host page issues on our behalf. This deliberately mirrors
-// sanitizeCss() in background.js — they had the same blind spot because they
-// had the same regex.
-function urlTargets(css) {
-  const quoted = [...css.matchAll(/(['"])\s*(https?:[^'"]*)\1/gi)].map((m) => m[2].trim());
-  return [...css.matchAll(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi)]
-    .map((m) => m[2].trim())
-    .concat(quoted);
-}
+// The worker registers its listener and reads chrome.* as it loads, so the stubs
+// have to be standing before the import.
+let route = () => {
+  throw new Error('no route set');
+};
+let listener;
+globalThis.chrome = {
+  runtime: {
+    getURL: (name) => `chrome-extension://test/${name}`,
+    onMessage: { addListener: (fn) => (listener = fn) },
+  },
+};
+globalThis.fetch = async (url, options) => route(url, options);
+
+// Every reference a stylesheet makes, read with the worker's own extractor
+// rather than a second copy of it: hand-copied regexes drifted into the
+// identical blind spot twice. A stylesheet is a declarative artifact this repo
+// owns, and the schemes of its references are the contract — anything but data:
+// is a request the host page issues on our behalf.
+const { cssReferences: urlTargets } = await import('../extension/background.js');
 
 // ---------------------------------------------------------------------------
 // The one hard requirement: content.js never talks to the network.
@@ -82,9 +89,6 @@ test('manifest keeps network permission scoped and the extension ID pinned', () 
 // ---------------------------------------------------------------------------
 
 const PROXY = 'https://fundable-extension-api.vercel.app';
-let route = () => {
-  throw new Error('no route set');
-};
 
 const body = (status, json) => ({
   status,
@@ -102,23 +106,29 @@ const bytes = (contentType, ...octets) => ({
   arrayBuffer: async () => new Uint8Array(octets).buffer,
 });
 
-let listener;
-globalThis.chrome = {
-  runtime: {
-    getURL: (path) => `chrome-extension://test/${path}`,
-    onMessage: { addListener: (fn) => (listener = fn) },
-  },
-};
-globalThis.fetch = async (url, options) => route(url, options);
-
-await import('../extension/background.js');
-
 // Also asserts the listener returns true, which is what keeps sendResponse
 // alive across the await in MV3.
 const ask = (message) =>
   new Promise((resolve) => {
     assert.equal(listener(message, null, resolve), true, 'listener must return true');
   });
+
+// An inline SVG is the shape panel.css is most likely to reach for, since data:
+// is the only scheme it is allowed — and it carries a quoted http(s) namespace
+// that loads nothing. Eating it would blank the icon silently.
+const SVG_RULE =
+  '.fx-icon{background-image:url("data:image/svg+xml,%3csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\'%3e...")}';
+
+test('a data: reference is read whole, so the quotes inside it are not references', () => {
+  const targets = urlTargets(`${SVG_RULE}\n.fx-logo{background-image:image-set("https://cdn.example.com/logo.png" 1x)}`);
+  assert.deepEqual(targets, [
+    "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...",
+    'https://cdn.example.com/logo.png',
+  ]);
+  // Which is what the panel.css guard above asserts on: one legal data: target,
+  // and the remote one still caught.
+  assert.equal(targets.filter((t) => !/^data:/i.test(t)).length, 1);
+});
 
 // The stylesheet is injected into the panel's shadow root, which is still page
 // CSS: whatever it references, the page fetches, in full view of its Network
@@ -140,6 +150,7 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
         '.fx-tile{background-image:image-set(url("data:image/png;base64,AAA") 1x, "https://cdn.example.com/x@2x.png" 2x)}\n' +
         '.fx-round{background-image:image-set(linear-gradient(red, blue) 1x, "https://cdn.example.com/y@2x.png" 2x)}\n' +
         '.fx-pill{background:url("data:image/gif;base64,R0lGOD")}\n' +
+        `${SVG_RULE}\n` +
         // Unquoted and outside url(): nothing here understands it, which is the
         // whole reason the survivor warning exists.
         ':root{--fx-icons:https://survivor.example.com/sprite.svg}\n',
@@ -156,15 +167,21 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
   }
 
   assert.ok('identifier' in res, 'init must report the resolver verdict');
-  assert.deepEqual(urlTargets(res.css), ['data:image/png;base64,AAA', 'data:image/gif;base64,R0lGOD']);
+  assert.deepEqual(urlTargets(res.css), [
+    'data:image/png;base64,AAA',
+    'data:image/gif;base64,R0lGOD',
+    "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...",
+  ]);
   assert.doesNotMatch(res.css, /@import/, 'a bare @import fetches too');
   assert.doesNotMatch(res.css, /cdn\.example\.com/, 'image-set carries a bare string, not a url()');
   assert.match(res.css, /\.fx-pill\{background:/, 'only the references are stripped, not the rules');
+  assert.ok(res.css.includes(SVG_RULE), 'a data: URI has to survive byte for byte, namespace and all');
 
   assert.match(warnings.join('\n'), /https:\/\/cdn\.example\.com\/bg\.png/, 'a silent strip is a mystery');
   // The survivor warning is the durable half: the next construct nobody
   // anticipated stays diagnosable instead of leaking quietly.
   assert.match(warnings.join('\n'), /survivor\.example\.com/);
+  assert.doesNotMatch(warnings.join('\n'), /w3\.org/, 'a namespace inside a data: URI fetches nothing');
 });
 
 const CARD = {
@@ -264,6 +281,20 @@ test('fonts come back as bytes, and a stale filename drops just that weight', as
   const before = calls;
   await ask({ type: 'fonts' });
   assert.equal(calls, before);
+});
+
+// The listener has already returned true, so a handler that throws instead of
+// answering is indistinguishable from a hang: the panel stays on "Loading…"
+// until the port dies. The proxy is another crewmate's and does not exist yet,
+// so a card shaped unlike the contract is a live possibility — investors as bare
+// strings makes attachLogos throw on assignment under module strict mode.
+test('a handler that throws still answers, rather than leaving the panel loading', async () => {
+  route = (url) =>
+    url.includes('/api/logo')
+      ? bytes('image/png', 1)
+      : body(200, { name: 'Acme', domain: 'acme.com', investors: ['Greylock'] });
+  const res = await ask({ type: 'lookup', identifier: { kind: 'domain', value: 'acme.com' } });
+  assert.deepEqual(res, { error: 'unavailable' });
 });
 
 test('failures map to the three quiet error codes', async () => {
@@ -688,6 +719,45 @@ test('a navigation that does not change the URL leaves the open card alone', asy
     const next = document.querySelector('#fundable-extension-root');
     assert.notEqual(next, host, 'a real URL change rebuilds the pill');
     assert.equal(document.querySelectorAll('#fundable-extension-root').length, 1);
+  } finally {
+    delete globalThis.navigation;
+    delete globalThis.location;
+    for (const node of document.querySelectorAll('#fundable-extension-root')) node.remove();
+  }
+});
+
+// The same-URL guard must not swallow the retry: a worker that never answered —
+// restarting, or the context invalidated by an extension reload — leaves no pill
+// and no record, so the next navigation tries again. A deny-listed page is
+// different: the worker did answer, so it stays quiet.
+test('a URL the worker never answered for is retried, not recorded as synced', async () => {
+  const listeners = {};
+  globalThis.navigation = {
+    addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
+  };
+  globalThis.location = { href: 'https://www.crunchbase.com/organization/stripe' };
+
+  let answer = null;
+  chrome.runtime.sendMessage = async (message) => {
+    if (message.type !== 'init') return null;
+    if (!answer) throw new Error('Extension context invalidated');
+    return answer;
+  };
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  try {
+    panel.start();
+    await settle();
+    assert.equal(document.querySelector('#fundable-extension-root'), null, 'nothing to mount yet');
+
+    answer = { identifier: { kind: 'crunchbase', value: location.href }, css: '' };
+    for (const fn of listeners.navigatesuccess) fn({});
+    await settle();
+    assert.ok(
+      document.querySelector('#fundable-extension-root'),
+      'the same URL must be re-resolved after a transport failure',
+    );
   } finally {
     delete globalThis.navigation;
     delete globalThis.location;
