@@ -283,8 +283,8 @@ resolves('a linkedin company page keeps its anchor', 'linkedin', [
   ['https://www.linkedin.com/company/stripe#profile', 'https://www.linkedin.com/company/stripe'],
 ]);
 
-// Whole host labels and whole path segments only, after `-`/`_` are stripped —
-// so ordinary marketing paths that merely contain an auth word still resolve.
+// Whole path segments only, after `-`/`_` are stripped — so ordinary marketing
+// paths that merely contain an auth word still resolve.
 resolves('auth words match whole segments, not substrings', 'domain', [
   ['https://acme.com/blog/oauth-explained', 'acme.com'],
   ['https://acme.com/design/campaign', 'acme.com'],
