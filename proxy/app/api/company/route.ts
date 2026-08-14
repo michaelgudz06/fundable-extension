@@ -59,11 +59,17 @@ export async function GET(req: Request) {
     }
 
     const { found, card, credits } = await fetchCard(id);
-    await cache.incrByFloat(creditKey, credits, 172800);
-
     const payload = found ? { found: true, card } : { found: false };
-    if (!found) await cache.recordMiss(id.key);
-    await cache.set(`company:${id.key}`, JSON.stringify(payload), CARD_TTL);
+
+    // Fundable has already billed for this card, so bookkeeping must never cost the caller
+    // the answer: a failed write degrades to "not cached", not to an error.
+    try {
+      await cache.incrByFloat(creditKey, credits, 172800);
+      if (!found) await cache.recordMiss(id.key);
+      await cache.set(`company:${id.key}`, JSON.stringify(payload), CARD_TTL);
+    } catch (e) {
+      console.error('cache write failed', e instanceof Error ? e.message : e);
+    }
     return json(payload, 200, cors);
   } catch (e) {
     if (e instanceof UpstreamError) {

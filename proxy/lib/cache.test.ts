@@ -31,6 +31,13 @@ describe('memory cache', () => {
     expect(await cache.get('k')).toBeNull();
   });
 
+  it('keeps every concurrent increment', async () => {
+    const results = await Promise.all([1, 1, 1, 1, 1].map((by) => cache.incrByFloat('rl:1.1.1.1:0', by, 60)));
+
+    expect(await cache.get('rl:1.1.1.1:0')).toBe('5');
+    expect([...results].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5]);
+  });
+
   it('accumulates fractional credits', async () => {
     expect(await cache.incrByFloat('credits', 0.1, 60)).toBeCloseTo(0.1);
     expect(await cache.incrByFloat('credits', 2, 60)).toBeCloseTo(2.1);

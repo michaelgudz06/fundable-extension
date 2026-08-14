@@ -205,6 +205,43 @@ describe('GET /api/company', () => {
     expect(await res.json()).toEqual({ error: 'upstream_error' });
   });
 
+  it('still returns the paid card when the cache write fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.test';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    const fundable = [SEARCH_HIT, COMPANY, INVESTORS];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: URL | string, init: RequestInit) => {
+        if (!String(input).startsWith('https://redis.test')) return Response.json(fundable.shift());
+        const [cmd] = JSON.parse(init.body as string) as string[];
+        if (cmd === 'SET') return new Response('down', { status: 500 });
+        return Response.json({ result: cmd === 'GET' ? null : 1 });
+      }),
+    );
+    const { GET } = await loadRoute();
+
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    expect((await res.json()).found).toBe(true);
+  });
+
+  it('does not cache an empty company detail as a miss', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const upstream = stubUpstream(
+      [200, SEARCH_HIT],
+      [200, { success: true, data: {}, meta: { credits_used: 1 } }],
+      [200, SEARCH_HIT],
+      [200, COMPANY],
+      [200, INVESTORS],
+    );
+    const { GET } = await loadRoute();
+
+    expect((await GET(req())).status).toBe(502);
+    expect((await (await GET(req())).json()).found).toBe(true);
+    expect(upstream).toHaveBeenCalledTimes(5);
+  });
+
   it('returns the error envelope when an upstream request aborts', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const upstream = vi.fn(async () => {

@@ -234,6 +234,24 @@ describe('fetchCard ladder', () => {
     expect(err.retryAfter).toBe('12');
   });
 
+  it('treats a 200 detail body with no company as an upstream error, not a miss', async () => {
+    stubFetch({ ...hitRoutes, '/company?': [200, { success: true, data: {}, meta: { credits_used: 1 } }] });
+    const err = await fetchCard(id).catch((e) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect(err.status).toBe(502);
+  });
+
+  it('spends one deadline across the whole ladder, not one per call', async () => {
+    stubFetch(hitRoutes);
+    await fetchCard(id);
+
+    const calls = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls as [unknown, RequestInit][];
+    const signals = calls.map(([, init]) => init.signal);
+    expect(signals).toHaveLength(3);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(new Set(signals).size).toBe(1);
+  });
+
   it('falls back to documented per-call costs when meta.credits_used is missing', async () => {
     stubFetch({
       '/company/search': [200, { data: { companies: [{ id: 'uuid-1' }] } }],

@@ -53,26 +53,36 @@ const store = new Map<string, { value: string; expiresAt: number }>();
 // the number of unexpired keys — one 24h entry per distinct identifier looked up.
 const SWEEP_ABOVE = 10_000;
 
+// Synchronous so incrByFloat can read and write with no await in between: invocations share
+// one event loop, and an interleaved read-modify-write silently loses increments.
+function read(key: string): string | null {
+  const hit = store.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    store.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function write(key: string, value: string, ttlSeconds: number) {
+  if (store.size > SWEEP_ABOVE) {
+    const now = Date.now();
+    for (const [k, entry] of store) if (entry.expiresAt <= now) store.delete(k);
+  }
+  store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+
 const memory: Cache = {
   async get(key) {
-    const hit = store.get(key);
-    if (!hit) return null;
-    if (hit.expiresAt <= Date.now()) {
-      store.delete(key);
-      return null;
-    }
-    return hit.value;
+    return read(key);
   },
   async set(key, value, ttlSeconds) {
-    if (store.size > SWEEP_ABOVE) {
-      const now = Date.now();
-      for (const [k, entry] of store) if (entry.expiresAt <= now) store.delete(k);
-    }
-    store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+    write(key, value, ttlSeconds);
   },
   async incrByFloat(key, by, ttlSeconds) {
-    const total = Number((await memory.get(key)) ?? 0) + by;
-    await memory.set(key, String(total), ttlSeconds);
+    const total = Number(read(key) ?? 0) + by;
+    write(key, String(total), ttlSeconds);
     return total;
   },
   async recordMiss() {

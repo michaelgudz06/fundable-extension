@@ -82,17 +82,19 @@ export function normalizeIdentifier(kind: IdKind, raw: string): Identifier | nul
 
 const UPSTREAM_TIMEOUT_MS = 8000;
 
-async function call(path: string, params: Record<string, string>, fallbackCredits: number) {
+async function call(
+  path: string,
+  params: Record<string, string>,
+  fallbackCredits: number,
+  signal: AbortSignal,
+) {
   const key = process.env.FUNDABLE_API_KEY;
   if (!key) throw new Error('FUNDABLE_API_KEY is not set');
   const base = (process.env.FUNDABLE_BASE_URL || 'https://www.tryfundable.ai/api/v1').replace(/\/+$/, '');
   const url = new URL(base + path);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
-  const res = await fetch(url, {
-    headers: { authorization: `Bearer ${key}` },
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-  });
+  const res = await fetch(url, { headers: { authorization: `Bearer ${key}` }, signal });
   if (!res.ok) throw new UpstreamError(res.status, res.headers.get('retry-after') ?? undefined);
   const body = (await res.json()) as { data?: any; meta?: { credits_used?: number } };
   const used = Number(body.meta?.credits_used);
@@ -154,7 +156,8 @@ function toCard(c: any, investors: any[]): Card {
  * on the company lookup, is a genuine miss; `402`/`429` throw and must not be cached as one.
  */
 export async function fetchCard(id: Identifier): Promise<{ found: boolean; card?: Card; credits: number }> {
-  const search = await call('/company/search', { [id.kind]: id.upstream }, 0.1);
+  const deadline = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
+  const search = await call('/company/search', { [id.kind]: id.upstream }, 0.1, deadline);
   let credits = search.credits;
 
   const match = search.data.companies?.[0];
@@ -162,20 +165,20 @@ export async function fetchCard(id: Identifier): Promise<{ found: boolean; card?
 
   let company;
   try {
-    const res = await call('/company', { id: match.id }, 1);
+    const res = await call('/company', { id: match.id }, 1, deadline);
     credits += res.credits;
     company = res.data.company;
   } catch (e) {
     if (e instanceof UpstreamError && e.status === 404) return { found: false, credits: credits + 1 };
     throw e;
   }
-  if (!company) return { found: false, credits };
+  if (!company) throw new UpstreamError(502);
 
   let investors: any[] = [];
   const dealId = company.latest_deal?.id;
   if (dealId) {
     try {
-      const res = await call(`/deals/${encodeURIComponent(dealId)}/investors`, {}, 1);
+      const res = await call(`/deals/${encodeURIComponent(dealId)}/investors`, {}, 1, deadline);
       credits += res.credits;
       investors = res.data.investors ?? [];
     } catch (e) {
