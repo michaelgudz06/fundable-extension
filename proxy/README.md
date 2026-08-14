@@ -8,9 +8,10 @@ never in a response.
 
 ### `GET /api/company?domain=|linkedin=|crunchbase=`
 
-Exactly one identifier. Values are normalized before they reach a cache key or an upstream
-URL — a URL, a `www.` prefix, mixed case, a port or a path all collapse to the same entry,
-and anything that isn't a valid hostname or slug is a `400`.
+Exactly one identifier — if several are sent, the first of `domain`, `linkedin`,
+`crunchbase` wins and the rest are ignored. Values are normalized before they reach a cache
+key or an upstream URL — a URL, a `www.` prefix, mixed case, a port or a path all collapse
+to the same entry, and anything that isn't a valid hostname or slug is a `400`.
 
 Hit — `200`:
 
@@ -41,7 +42,7 @@ Errors are `{"error": "<code>"}`:
 | 400 | `bad_request` | missing, unknown, or malformed identifier |
 | 403 | `forbidden` | `Origin` present and not `ALLOWED_EXTENSION_ORIGIN` |
 | 429 | `rate_limited` | per-IP limit, or upstream `429` (`Retry-After` forwarded) |
-| 502 | `upstream_error` | anything else from Fundable |
+| 502 | `upstream_error` | anything else from Fundable, or the whole ladder exceeding its 8s deadline |
 | 503 | `temporarily_unavailable` | kill switch, daily credit ceiling, or upstream `402` |
 
 `402` and `429` are never cached as misses, so a retry after recovery is a clean lookup.
