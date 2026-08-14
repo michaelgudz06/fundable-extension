@@ -7,17 +7,18 @@ const path = (p) => new URL(`../extension/${p}`, import.meta.url);
 const read = (p) => readFileSync(path(p), 'utf8');
 const manifest = JSON.parse(read('manifest.json'));
 
-// Every image reference a stylesheet makes, in source order. A stylesheet is a
-// declarative artifact this repo owns, and the schemes of its references are the
-// contract: anything but data: is a request the host page issues on our behalf.
-// image-set() is here because it takes a bare quoted string with no url() token,
-// which is exactly the shape a url()-only reader misses.
+// Every reference a stylesheet makes: url() targets first, then any quoted
+// http(s) string, which is how image-set() and friends carry a URL with no
+// url() token at all. A stylesheet is a declarative artifact this repo owns,
+// and the schemes of its references are the contract: anything but data: is a
+// request the host page issues on our behalf. This deliberately mirrors
+// sanitizeCss() in background.js — they had the same blind spot because they
+// had the same regex.
 function urlTargets(css) {
-  const targets = [...css.matchAll(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi)].map((m) => m[2].trim());
-  for (const [, inner] of css.matchAll(/(?:-webkit-)?image-set\(([^)]*)\)/gi)) {
-    targets.push(...[...inner.matchAll(/(['"])([^'"]*)\1/g)].map((m) => m[2].trim()));
-  }
-  return targets;
+  const quoted = [...css.matchAll(/(['"])\s*(https?:[^'"]*)\1/gi)].map((m) => m[2].trim());
+  return [...css.matchAll(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi)]
+    .map((m) => m[2].trim())
+    .concat(quoted);
 }
 
 // ---------------------------------------------------------------------------
@@ -133,8 +134,15 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
         '.fx-panel{background:url("https://cdn.example.com/bg.png")}\n' +
         '.fx-logo{mask:url(/local/icon.svg)}\n' +
         '.fx-chip{background-image:-webkit-image-set("https://cdn.example.com/chip.png" 1x)}\n' +
+        // Both of these hide the remote source behind an earlier argument that
+        // closes a paren of its own, which is why the strip cannot be scoped to
+        // the image-set() construct.
+        '.fx-tile{background-image:image-set(url("data:image/png;base64,AAA") 1x, "https://cdn.example.com/x@2x.png" 2x)}\n' +
+        '.fx-round{background-image:image-set(linear-gradient(red, blue) 1x, "https://cdn.example.com/y@2x.png" 2x)}\n' +
         '.fx-pill{background:url("data:image/gif;base64,R0lGOD")}\n' +
-        '.fx-footer::after{content:"https://survivor.example.com"}\n',
+        // Unquoted and outside url(): nothing here understands it, which is the
+        // whole reason the survivor warning exists.
+        ':root{--fx-icons:https://survivor.example.com/sprite.svg}\n',
     };
   };
   const warnings = [];
@@ -148,7 +156,7 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
   }
 
   assert.ok('identifier' in res, 'init must report the resolver verdict');
-  assert.deepEqual(urlTargets(res.css), ['data:image/gif;base64,R0lGOD']);
+  assert.deepEqual(urlTargets(res.css), ['data:image/png;base64,AAA', 'data:image/gif;base64,R0lGOD']);
   assert.doesNotMatch(res.css, /@import/, 'a bare @import fetches too');
   assert.doesNotMatch(res.css, /cdn\.example\.com/, 'image-set carries a bare string, not a url()');
   assert.match(res.css, /\.fx-pill\{background:/, 'only the references are stripped, not the rules');
@@ -624,5 +632,65 @@ test('the pill follows same-document navigation without ever doubling up', async
   } finally {
     delete globalThis.navigation;
     delete globalThis.location;
+  }
+});
+
+// navigatesuccess fires for every same-document navigation, including the ones
+// that go nowhere: a replaceState adding a tracking param, scroll restoration, a
+// hash change. Rebuilding on those destroys the card the reader is mid-way
+// through — the goal was never to show a stale card for a NEW company.
+test('a navigation that does not change the URL leaves the open card alone', async () => {
+  const listeners = {};
+  globalThis.navigation = {
+    addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
+  };
+  globalThis.location = { href: 'https://www.linkedin.com/company/stripe' };
+
+  let inits = 0;
+  chrome.runtime.sendMessage = async (message) => {
+    if (message.type === 'init') {
+      inits++;
+      return { identifier: { kind: 'linkedin', value: message.url }, css: '' };
+    }
+    if (message.type === 'lookup') return { found: true, card: { name: 'Stripe' } };
+    return null;
+  };
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const arrive = async () => {
+    for (const fn of listeners.navigatesuccess ?? []) fn({});
+    await settle();
+  };
+
+  try {
+    panel.start();
+    await settle();
+    const host = document.querySelector('#fundable-extension-root');
+    assert.ok(host, 'the pill mounts on a company page');
+
+    host.shadowRoot.querySelector('.fx-pill').click();
+    await settle();
+    const card = host.shadowRoot.querySelector('.fx-panel');
+    assert.equal(card.style.display, '', 'the reader has the panel open');
+    assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
+
+    const settled = inits;
+    await arrive();
+    await arrive();
+    assert.equal(document.querySelector('#fundable-extension-root'), host, 'the host must not be rebuilt');
+    assert.equal(card.style.display, '', 'the card the reader is looking at must survive');
+    assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
+    assert.equal(inits, settled, 'an unchanged URL is not a new company; do not re-resolve it');
+
+    location.href = 'https://www.linkedin.com/company/ramp';
+    await arrive();
+    assert.equal(inits, settled + 1, 'a real URL change still re-resolves');
+    const next = document.querySelector('#fundable-extension-root');
+    assert.notEqual(next, host, 'a real URL change rebuilds the pill');
+    assert.equal(document.querySelectorAll('#fundable-extension-root').length, 1);
+  } finally {
+    delete globalThis.navigation;
+    delete globalThis.location;
+    for (const node of document.querySelectorAll('#fundable-extension-root')) node.remove();
   }
 });

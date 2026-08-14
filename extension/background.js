@@ -72,14 +72,16 @@ function panelCss() {
 //
 // This matches the url() construct itself rather than the properties that can
 // carry one — background, mask, border-image, cursor, list-style and whatever
-// ships next — because enumerating them is how this class of bug survives.
-// image-set() is the reason the survivor warning below exists: it takes a bare
-// quoted string with no url() token at all, so no amount of url() matching finds
-// it. There will be another construct like it, and the warning is what makes the
-// next one diagnosable instead of silent.
+// ships next — because enumerating them is how this class of bug survives. The
+// same reasoning covers the constructs that carry a URL as a bare quoted string
+// with no url() token: image-set(), cross-fade(), whatever is invented next. So
+// every quoted http(s) string goes, wherever it sits. A content: string that
+// happens to be a URL goes with it; that is the price of not enumerating.
+//
+// Nothing catches every future construct, so the survivor warning is the
+// backstop that keeps the next one diagnosable instead of silent.
 const URL_TOKEN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
 const IMPORT_RULE = /@import\b[^;]*;?/gi;
-const IMAGE_SET = /(?:-webkit-)?image-set\(([^)]*)\)/gi;
 const REMOTE_STRING = /(['"])\s*https?:[^'"]*\1/gi;
 const REMOTE_LEFTOVER = /https?:\/\/[^\s'")]+/gi;
 
@@ -91,7 +93,7 @@ function sanitizeCss(css) {
     .replace(URL_TOKEN, (token, _quote, target) =>
       /^data:/i.test(target.trim()) ? token : drop(token),
     )
-    .replace(IMAGE_SET, (construct) => construct.replace(REMOTE_STRING, drop));
+    .replace(REMOTE_STRING, drop);
 
   if (stripped.length) {
     console.warn(
