@@ -12,7 +12,11 @@ const BLANK = Buffer.from(
 /** 1x1 transparent PNG — renders as empty rather than as a broken image. */
 function blank() {
   return new Response(BLANK, {
-    headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=3600' },
+    headers: {
+      'content-type': 'image/png',
+      'cache-control': 'public, max-age=3600',
+      'x-content-type-options': 'nosniff',
+    },
   });
 }
 
@@ -23,10 +27,12 @@ export async function GET(req: Request) {
   try {
     const res = await fetch(`https://www.google.com/s2/favicons?sz=128&domain=${domain}`);
     if (!res.ok) return blank();
+    const type = res.headers.get('content-type');
     return new Response(res.body, {
       headers: {
-        'content-type': res.headers.get('content-type') ?? 'image/png',
+        'content-type': type?.startsWith('image/') ? type : 'image/png',
         'cache-control': 'public, max-age=604800, immutable',
+        'x-content-type-options': 'nosniff',
       },
     });
   } catch {

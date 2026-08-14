@@ -41,21 +41,23 @@ export async function GET(req: Request) {
 
   const cache = getCache();
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() || 'unknown';
-  const perMinute = Number(process.env.RATE_LIMIT_PER_MIN || 30);
-  const hits = await cache.incrByFloat(`rl:${ip}:${Math.floor(Date.now() / 60000)}`, 1, 120);
-  if (hits > perMinute) return json({ error: 'rate_limited' }, 429, { ...cors, 'retry-after': '60' });
-
-  const cached = await cache.get(`company:${id.key}`);
-  if (cached) return json(JSON.parse(cached), 200, cors);
-
-  const creditKey = `credits:${new Date().toISOString().slice(0, 10)}`;
-  const dailyLimit = Number(process.env.DAILY_CREDIT_LIMIT || 500);
-  if (Number((await cache.get(creditKey)) ?? 0) >= dailyLimit) {
-    return json({ error: 'temporarily_unavailable' }, 503, cors);
-  }
-
   try {
+    const ip = req.headers.get('x-forwarded-for')?.split(',')[0].trim() || 'unknown';
+    const rateEnv = Number(process.env.RATE_LIMIT_PER_MIN);
+    const perMinute = Number.isFinite(rateEnv) && rateEnv > 0 ? rateEnv : 30;
+    const hits = await cache.incrByFloat(`rl:${ip}:${Math.floor(Date.now() / 60000)}`, 1, 120);
+    if (hits > perMinute) return json({ error: 'rate_limited' }, 429, { ...cors, 'retry-after': '60' });
+
+    const cached = await cache.get(`company:${id.key}`);
+    if (cached) return json(JSON.parse(cached), 200, cors);
+
+    const creditKey = `credits:${new Date().toISOString().slice(0, 10)}`;
+    const limitEnv = Number(process.env.DAILY_CREDIT_LIMIT);
+    const dailyLimit = Number.isFinite(limitEnv) && limitEnv > 0 ? limitEnv : 500;
+    if (Number((await cache.get(creditKey)) ?? 0) >= dailyLimit) {
+      return json({ error: 'temporarily_unavailable' }, 503, cors);
+    }
+
     const { found, card, credits } = await fetchCard(id);
     await cache.incrByFloat(creditKey, credits, 172800);
 

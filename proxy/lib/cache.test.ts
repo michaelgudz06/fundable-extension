@@ -31,6 +31,17 @@ describe('memory cache', () => {
     expect(await cache.get('k')).toBeNull();
   });
 
+  it('keeps live entries when a write sweeps expired ones', async () => {
+    vi.useFakeTimers();
+    await cache.set('card', 'v', 86_400);
+    for (let i = 0; i < 10_001; i++) await cache.set(`rl:${i}`, '1', 120);
+    vi.advanceTimersByTime(121_000);
+    await cache.set('another', 'v', 86_400);
+
+    expect(await cache.get('card')).toBe('v');
+    expect(await cache.get('rl:0')).toBeNull();
+  });
+
   it('accumulates fractional credits', async () => {
     expect(await cache.incrByFloat('credits', 0.1, 60)).toBeCloseTo(0.1);
     expect(await cache.incrByFloat('credits', 2, 60)).toBeCloseTo(2.1);

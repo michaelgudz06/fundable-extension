@@ -45,6 +45,8 @@ const redis: Cache = {
 };
 
 const store = new Map<string, { value: string; expiresAt: number }>();
+// Expired keys are otherwise only reclaimed by a get() that never comes (rate-limit buckets).
+const MAX_ENTRIES = 10_000;
 
 const memory: Cache = {
   async get(key) {
@@ -57,6 +59,10 @@ const memory: Cache = {
     return hit.value;
   },
   async set(key, value, ttlSeconds) {
+    if (store.size > MAX_ENTRIES) {
+      const now = Date.now();
+      for (const [k, entry] of store) if (entry.expiresAt <= now) store.delete(k);
+    }
     store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
   },
   async incrByFloat(key, by, ttlSeconds) {

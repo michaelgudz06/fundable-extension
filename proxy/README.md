@@ -81,8 +81,10 @@ for production.
 
 **Cache:** without the two Upstash variables the cache is an in-process `Map`, which does
 not survive across serverless invocations — on Vercel that means no caching and a
-per-instance rate limit. Setting both variables is the whole upgrade; no code change. The
-coverage-gap `misses` sorted set only exists on Upstash.
+per-instance rate limit. The daily credit counter is per-instance too, and with the cache
+effectively disabled every request costs the full 2.1 credits, so real spend can exceed
+`DAILY_CREDIT_LIMIT` by roughly the number of warm instances. Setting both variables is the
+whole upgrade; no code change. The coverage-gap `misses` sorted set only exists on Upstash.
 
 ## Development
 

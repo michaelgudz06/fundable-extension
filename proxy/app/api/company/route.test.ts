@@ -193,6 +193,29 @@ describe('GET /api/company', () => {
     expect((await from('2.2.2.2', 'b-one.com')).status).toBe(200);
   });
 
+  it('returns the error envelope, not a crash, when the cache backend fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.test';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    stubUpstream([500, { error: 'redis down' }]);
+    const { GET } = await loadRoute();
+
+    const res = await GET(req());
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'upstream_error' });
+  });
+
+  it('keeps the guards on when their env values are not positive numbers', async () => {
+    process.env.RATE_LIMIT_PER_MIN = 'thirty';
+    process.env.DAILY_CREDIT_LIMIT = '-1';
+    stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+    const { GET } = await loadRoute();
+
+    expect((await GET(req('domain=first.com'))).status).toBe(200); // default ceiling of 500 applies
+    const res = await GET(req('domain=second.com'));
+    expect(res.status).toBe(200); // default per-minute limit of 30, not NaN
+  });
+
   it('stops calling Fundable once the daily credit ceiling is reached', async () => {
     process.env.DAILY_CREDIT_LIMIT = '2';
     const upstream = stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
