@@ -8,6 +8,12 @@ This file is the project's committed home for project-intrinsic agent knowledge:
   logos, anything — belongs in `extension/background.js`. `test/extension.test.js` greps
   for violations; if it goes red, move the call, don't loosen the test. README.md § "The
   one hard requirement" has the full rationale.
+- **The same rule covers stylesheets.** A stylesheet injected into the panel's shadow root
+  is still a page stylesheet: any `url()` or `@import` in it is fetched BY THE PAGE and
+  lands in that Network tab. So `extension/panel.css` may reference nothing but `data:`
+  URIs. `panelCss()` in `extension/background.js` strips the rest at the boundary and warns
+  when it does. A `@font-face` built from bytes the worker fetched is the one exempt path —
+  a `FontFace` constructed from binary data loads no URL.
 - The extension ID is pinned by `key` in `extension/manifest.json` and the proxy's CORS
   allowlist depends on it. Do not regenerate it. See README.md § "The pinned extension ID".
 - `npm install` / `npm test` at the repo root are for the extension only (jsdom for render

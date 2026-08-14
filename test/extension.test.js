@@ -1,10 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { JSDOM } from 'jsdom';
 
-const read = (p) => readFileSync(new URL(`../extension/${p}`, import.meta.url), 'utf8');
+const path = (p) => new URL(`../extension/${p}`, import.meta.url);
+const read = (p) => readFileSync(path(p), 'utf8');
 const manifest = JSON.parse(read('manifest.json'));
+
+// Every target of a CSS url(), in source order. A stylesheet is a declarative
+// artifact this repo owns, and the schemes of its references are the contract:
+// anything but data: is a request the host page issues on our behalf.
+function urlTargets(css) {
+  return [...css.matchAll(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi)].map((m) => m[2].trim());
+}
 
 // ---------------------------------------------------------------------------
 // The one hard requirement: content.js never talks to the network.
@@ -42,14 +50,20 @@ test('content.js makes no page-visible network calls', () => {
   }
 });
 
-test('background.js is where the network calls live', () => {
-  assert.match(read('background.js'), /\bfetch\s*\(/);
+// panel.css belongs to another crewmate and is not in this worktree yet. When it
+// lands, its url() references have to obey the same rule content.js does.
+test('panel.css references nothing the page would have to fetch', { skip: !existsSync(path('panel.css')) }, () => {
+  for (const target of urlTargets(read('panel.css'))) {
+    assert.match(target, /^data:/i, `panel.css points at ${target}; the page would fetch it`);
+  }
 });
 
 test('manifest keeps network permission scoped and the extension ID pinned', () => {
   assert.ok(manifest.key, 'manifest needs a pinned key for a stable extension ID');
   assert.equal(manifest.background.type, 'module');
   assert.deepEqual(manifest.content_scripts[0].js, ['content.js']);
+  // The Navigation API, which content.js needs to see SPA navigation, is Chrome 102+.
+  assert.equal(manifest.minimum_chrome_version, '102');
   for (const host of manifest.host_permissions) {
     assert.doesNotMatch(host, /<all_urls>|\*:\/\/\*\//, 'host_permissions must name the proxy only');
   }
@@ -87,7 +101,7 @@ globalThis.chrome = {
     onMessage: { addListener: (fn) => (listener = fn) },
   },
 };
-globalThis.fetch = async (url) => route(url);
+globalThis.fetch = async (url, options) => route(url, options);
 
 await import('../extension/background.js');
 
@@ -98,14 +112,27 @@ const ask = (message) =>
     assert.equal(listener(message, null, resolve), true, 'listener must return true');
   });
 
-test('init hands back the resolver verdict and the packaged stylesheet', async () => {
+// The stylesheet is injected into the panel's shadow root, which is still page
+// CSS: whatever it references, the page fetches, in full view of its Network
+// tab. Only a data: URI loads nothing. panel.css is another crewmate's file, so
+// the worker strips the rest on the way through — the memoised css promise means
+// this is the one place the round trip actually happens.
+test('init hands back the resolver verdict and a stylesheet the page cannot fetch from', async () => {
   route = (url) => {
     assert.equal(url, 'chrome-extension://test/panel.css');
-    return { text: async () => '.fx-panel{}' };
+    return {
+      text: async () =>
+        '@import "https://cdn.example.com/reset.css";\n' +
+        '.fx-panel{background:url("https://cdn.example.com/bg.png")}\n' +
+        '.fx-logo{mask:url(/local/icon.svg)}\n' +
+        '.fx-pill{background:url("data:image/gif;base64,R0lGOD")}\n',
+    };
   };
   const res = await ask({ type: 'init', url: 'https://www.linkedin.com/company/stripe' });
   assert.ok('identifier' in res, 'init must report the resolver verdict');
-  assert.equal(res.css, '.fx-panel{}');
+  assert.deepEqual(urlTargets(res.css), ['data:image/gif;base64,R0lGOD']);
+  assert.doesNotMatch(res.css, /@import/, 'a bare @import fetches too');
+  assert.match(res.css, /\.fx-pill\{background:/, 'only the references are stripped, not the rules');
 });
 
 const CARD = {
@@ -136,6 +163,39 @@ test('a logo that fails to load leaves the card intact', async () => {
   const res = await ask({ type: 'lookup', identifier: { kind: 'domain', value: 'acme.com' } });
   assert.equal(res.found, true);
   assert.equal(res.card.logo, null);
+});
+
+// `lookup` awaits the logos before it answers, so without a deadline one stalled
+// connection leaves Promise.all pending, sendResponse uncalled, and the panel on
+// "Loading…" until Chrome tears the worker down and the port dies under it.
+test('a logo that never answers cannot hold the card hostage', async () => {
+  const realTimeout = AbortSignal.timeout;
+  const deadlines = [];
+  // The worker's own AbortSignal.timeout call still drives the abort; it is only
+  // shortened so this does not sit through the real four seconds. Hand back a
+  // controller rather than realTimeout(20): the real one fires on an unref'd
+  // timer, which lets the event loop drain out from under the pending fetch.
+  AbortSignal.timeout = (ms) => {
+    deadlines.push(ms);
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(new Error('TimeoutError')), 20);
+    return controller.signal;
+  };
+  route = (url, options) =>
+    url.includes('/api/logo')
+      ? new Promise((_, reject) =>
+          options.signal.addEventListener('abort', () => reject(options.signal.reason)),
+        )
+      : body(200, { name: 'Acme', domain: 'acme.com' });
+  try {
+    const res = await ask({ type: 'lookup', identifier: { kind: 'domain', value: 'acme.com' } });
+    assert.equal(res.found, true, 'a decorative logo must not gate the card');
+    assert.equal(res.card.logo, null);
+  } finally {
+    AbortSignal.timeout = realTimeout;
+  }
+  assert.equal(deadlines.length, 2, 'the card fetch needs a deadline too, not just the logo');
+  assert.ok(deadlines.every((ms) => ms > 0 && isFinite(ms)));
 });
 
 test('lookup accepts both a bare card and a {card} envelope', async () => {
@@ -203,7 +263,7 @@ globalThis.document = dom.window.document;
 
 // content.js is a classic content script, so it has no exports to import. Run
 // it as a function body and take the renderers off the end.
-const panel = new Function(`${read('content.js')}\nreturn { renderCard, registerFonts };`)();
+const panel = new Function(`${read('content.js')}\nreturn { renderCard, registerFonts, start };`)();
 
 function render(card) {
   const node = document.createElement('div');
@@ -355,6 +415,42 @@ test('an all-null card renders nothing rather than empty boxes', () => {
   assert.doesNotMatch(node.textContent, /null|undefined|NaN|Invalid/i);
 });
 
+// Date-only strings parse as UTC midnight. Formatted in the reader's own zone,
+// anything on a month boundary lands in the previous month west of UTC.
+test('a month-boundary date is not shifted into the previous month', () => {
+  const tz = process.env.TZ;
+  process.env.TZ = 'America/Los_Angeles';
+  try {
+    const node = render({
+      name: 'Edge Co',
+      stats: { latest_valuation_usd: 1e9, latest_valuation_date: '2021-01-01' },
+      latest_deal: { type: 'seed', date: '2021-01-01' },
+    });
+    assert.equal(node.querySelector('.fx-tile-label').textContent, 'Valuation · Jan 2021');
+    assert.equal(node.querySelector('.fx-round-date').textContent, 'Jan 2021');
+  } finally {
+    if (tz === undefined) delete process.env.TZ;
+    else process.env.TZ = tz;
+  }
+});
+
+// The card comes from the proxy; its text is set with textContent, but an href
+// goes straight into the host page's DOM as something the reader can click.
+test('a non-http href is dropped rather than made clickable', () => {
+  const node = render({
+    name: 'Evil Co',
+    links: {
+      website: 'javascript:alert(1)',
+      linkedin: 'data:text/html;base64,PHNjcmlwdD4=',
+      twitter: 'https://twitter.com/evilco',
+    },
+    latest_deal: { type: 'seed', article_url: 'javascript:alert(1)' },
+  });
+  assert.deepEqual([...node.querySelectorAll('.fx-chip')].map((c) => c.textContent), ['Twitter']);
+  assert.equal(node.querySelector('.fx-round-source'), null, 'a hostile source link hides itself');
+  assert.doesNotMatch(node.innerHTML, /javascript:|data:text/i);
+});
+
 test('unparseable dates and currencies are dropped, not rendered raw', () => {
   const node = render({
     name: 'Odd Co',
@@ -443,4 +539,55 @@ test('card text is set as text, so a hostile name cannot inject markup', () => {
   const node = render({ name: '<img src=x onerror=alert(1)>' });
   assert.equal(node.querySelector('img'), null);
   assert.equal(node.querySelector('.fx-name').textContent, '<img src=x onerror=alert(1)>');
+});
+
+// ---------------------------------------------------------------------------
+// SPA navigation. LinkedIn and Crunchbase route without reloading the document,
+// so the content script runs once — on /feed, where no pill belongs — and the
+// company page you click through to would never get one.
+// ---------------------------------------------------------------------------
+
+test('the pill follows same-document navigation without ever doubling up', async () => {
+  const navigate = [];
+  globalThis.navigation = {
+    addEventListener: (type, fn) => {
+      assert.equal(type, 'navigate');
+      navigate.push(fn);
+    },
+  };
+  globalThis.location = { href: 'https://www.linkedin.com/feed/' };
+
+  const COMPANY = /\/company\//;
+  chrome.runtime.sendMessage = async (message) => {
+    if (message.type === 'fonts') return null;
+    assert.equal(message.type, 'init');
+    return { identifier: COMPANY.test(message.url) ? { kind: 'linkedin', value: message.url } : null, css: '' };
+  };
+
+  const hosts = () => document.querySelectorAll('#fundable-extension-root');
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const go = async (url) => {
+    location.href = url;
+    for (const fn of navigate) fn();
+    await settle();
+  };
+
+  try {
+    panel.start();
+    await settle();
+    assert.equal(hosts().length, 0, 'no pill where the resolver says null');
+    assert.equal(navigate.length, 1, 'start must subscribe to navigation');
+
+    await go('https://www.linkedin.com/company/stripe');
+    assert.equal(hosts().length, 1, 'routing to a company page must mount the pill');
+
+    await go('https://www.linkedin.com/company/ramp');
+    assert.equal(hosts().length, 1, 'routing on must not leave the previous host behind');
+
+    await go('https://www.linkedin.com/feed/');
+    assert.equal(hosts().length, 0, 'routing away must unmount the pill, not just hide it');
+  } finally {
+    delete globalThis.navigation;
+    delete globalThis.location;
+  }
 });

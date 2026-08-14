@@ -11,6 +11,12 @@ import { resolveIdentifier } from './resolver.js';
 
 const PROXY = 'https://fundable-extension-api.vercel.app';
 
+// Nothing in here may hang: `lookup` awaits the decorative logos before it
+// answers, so one stalled connection would leave the panel on "Loading…" until
+// Chrome tears the worker down and the port closes under it.
+const CARD_TIMEOUT_MS = 8000;
+const ASSET_TIMEOUT_MS = 4000;
+
 // PP Mori is hotlinked from Fundable's own CDN rather than bundled: the font is
 // licensed to Fundable, not to this extension. Two weights exist, 400 and 600.
 //
@@ -53,14 +59,46 @@ let cssPromise;
 function panelCss() {
   cssPromise ??= fetch(chrome.runtime.getURL('panel.css'))
     .then((r) => r.text())
+    .then(sanitizeCss)
     .catch(() => '');
   return cssPromise;
+}
+
+// A stylesheet injected into the panel's shadow root is still a page stylesheet:
+// the page fetches whatever it references, and that request lands in the
+// inspected page's Network tab. Only a data: URI loads nothing. panel.css
+// belongs to another crewmate, so the rule is enforced here, at the boundary
+// where the stylesheet enters the extension.
+//
+// This matches the url() construct itself rather than the properties that can
+// carry one — background, mask, border-image, cursor, list-style and whatever
+// ships next — because enumerating them is how this class of bug survives.
+const URL_TOKEN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
+const IMPORT_RULE = /@import\b[^;]*;?/gi;
+
+function sanitizeCss(css) {
+  const stripped = [];
+  const safe = css
+    .replace(IMPORT_RULE, (rule) => (stripped.push(rule.trim()), ''))
+    .replace(URL_TOKEN, (token, _quote, target) => {
+      if (/^data:/i.test(target.trim())) return token;
+      stripped.push(token.trim());
+      return '';
+    });
+  if (stripped.length) {
+    console.warn(
+      `[fundable] stripped page-visible reference(s) from panel.css: ${stripped.join(', ')}`,
+    );
+  }
+  return safe;
 }
 
 async function lookup({ kind, value }) {
   let res;
   try {
-    res = await fetch(`${PROXY}/api/company?${kind}=${encodeURIComponent(value)}`);
+    res = await fetch(`${PROXY}/api/company?${kind}=${encodeURIComponent(value)}`, {
+      signal: AbortSignal.timeout(CARD_TIMEOUT_MS),
+    });
   } catch {
     return { error: 'network' };
   }
@@ -120,7 +158,7 @@ function fonts() {
 
 async function fetchBase64(url) {
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { signal: AbortSignal.timeout(ASSET_TIMEOUT_MS) });
     if (!res.ok) return null;
     const bytes = new Uint8Array(await res.arrayBuffer());
     let binary = '';
