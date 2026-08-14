@@ -11,6 +11,23 @@ import { resolveIdentifier } from './resolver.js';
 
 const PROXY = 'https://fundable-extension-api.vercel.app';
 
+// PP Mori is hotlinked from Fundable's own CDN rather than bundled: the font is
+// licensed to Fundable, not to this extension. Two weights exist, 400 and 600.
+//
+// The hashed filenames rotate on every Fundable deploy. When they go stale the
+// fetch 404s, the panel keeps its Helvetica/Arial fallback, and nothing else
+// changes — which is why none of this is allowed to throw. Refresh them with:
+//
+//   curl -s https://www.tryfundable.ai | grep -oE '/_next/static/css/[^"]+\.css'
+//   curl -s https://www.tryfundable.ai/_next/static/css/<hash>.css | grep -o '@font-face{[^}]*otf[^}]*}'
+//
+// No host_permissions entry is needed for this origin: Vercel serves
+// /_next/static with `access-control-allow-origin: *`.
+const FONTS = [
+  { weight: 400, url: 'https://www.tryfundable.ai/_next/static/media/8f65835aa057b6ed-s.p.otf' },
+  { weight: 600, url: 'https://www.tryfundable.ai/_next/static/media/cb07cb684de218c2-s.p.otf' },
+];
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'init') {
     init(msg.url).then(sendResponse);
@@ -18,6 +35,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg?.type === 'lookup') {
     lookup(msg.identifier).then(sendResponse);
+    return true;
+  }
+  if (msg?.type === 'fonts') {
+    fonts().then(sendResponse);
     return true;
   }
 });
@@ -78,13 +99,33 @@ async function attachLogos(card) {
 
 async function logoFor(domain) {
   if (!domain) return null;
+  const asset = await fetchBase64(`${PROXY}/api/logo?domain=${encodeURIComponent(domain)}`);
+  return asset && `data:${asset.type || 'image/png'};base64,${asset.base64}`;
+}
+
+// The font files are fetched here for the same reason the logos are: an
+// @font-face inside a shadow root is ignored, and registering one on the
+// document would make the page fetch the file where DevTools can see it. The
+// content script gets bytes and builds a FontFace that loads no URL at all.
+let fontsPromise;
+function fonts() {
+  fontsPromise ??= Promise.all(
+    FONTS.map(async (font) => {
+      const asset = await fetchBase64(font.url);
+      return asset && { weight: font.weight, base64: asset.base64 };
+    }),
+  ).then((faces) => faces.filter(Boolean));
+  return fontsPromise;
+}
+
+async function fetchBase64(url) {
   try {
-    const res = await fetch(`${PROXY}/api/logo?domain=${encodeURIComponent(domain)}`);
+    const res = await fetch(url);
     if (!res.ok) return null;
     const bytes = new Uint8Array(await res.arrayBuffer());
     let binary = '';
     for (const byte of bytes) binary += String.fromCharCode(byte);
-    return `data:${res.headers.get('content-type') || 'image/png'};base64,${btoa(binary)}`;
+    return { base64: btoa(binary), type: res.headers.get('content-type') };
   } catch {
     return null;
   }

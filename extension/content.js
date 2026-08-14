@@ -193,6 +193,35 @@ function renderCard(card) {
 
 const send = (message) => chrome.runtime.sendMessage(message).catch(() => null);
 
+// PP Mori has to be registered on the document: an @font-face declared inside a
+// shadow root is ignored and its file is never fetched, so panel.css cannot load
+// the font by itself.
+//
+// The bytes come from the service worker, and a FontFace built from binary data
+// loads no URL — so this costs the page zero network requests. Every failure
+// path here is silent on purpose: a rotated filename, a page that forbids it, a
+// font that won't parse. panel.css keeps its Helvetica/Arial fallback and the
+// card renders either way.
+const FONT_FAMILY = 'PP Mori'; // must match the family panel.css asks for
+
+async function registerFonts() {
+  const faces = await send({ type: 'fonts' });
+  if (!Array.isArray(faces)) return;
+  for (const face of faces) {
+    try {
+      const bytes = Uint8Array.from(atob(face.base64), (char) => char.charCodeAt(0));
+      const font = new FontFace(FONT_FAMILY, bytes, {
+        weight: String(face.weight),
+        style: 'normal',
+        display: 'swap',
+      });
+      document.fonts.add(await font.load());
+    } catch {
+      // keep the fallback
+    }
+  }
+}
+
 function mount(css) {
   const host = document.createElement('div');
   host.id = 'fundable-extension-root';
@@ -211,6 +240,7 @@ function mount(css) {
 
   root.append(pill, panel);
   document.documentElement.append(host);
+  registerFonts(); // deliberately not awaited: it must never hold up a render
 
   const show = (...nodes) => panel.replaceChildren(...nodes);
   let seq = 0;

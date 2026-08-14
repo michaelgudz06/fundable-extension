@@ -29,6 +29,7 @@ const FORBIDDEN = [
   [/\bsrc\s*=\s*[`'"]\s*https?:/i, 'a remote src= URL'],
   [/<img[^>]*\bsrc\s*=\s*[`'"]?\s*https?:/i, 'a remote <img src>'],
   [/createElement\(\s*[`'"]link[`'"]/, "createElement('link') — a remote stylesheet"],
+  [/url\(\s*[`'"]?\s*https?:/i, 'a remote CSS url() — fonts and images must arrive as bytes'],
 ];
 
 test('content.js makes no page-visible network calls', () => {
@@ -158,6 +159,21 @@ test('a miss is a miss, not an error', async () => {
   }
 });
 
+test('fonts come back as bytes, and a stale filename drops just that weight', async () => {
+  const FONT_400 = 'https://www.tryfundable.ai/_next/static/media/8f65835aa057b6ed-s.p.otf';
+  let calls = 0;
+  route = (url) => {
+    calls++;
+    return url === FONT_400 ? bytes('font/otf', 79, 84, 84, 79) : body(404, null);
+  };
+  assert.deepEqual(await ask({ type: 'fonts' }), [{ weight: 400, base64: 'T1RUTw==' }]);
+
+  // Memoised: the worker fetches each face once per lifetime, not once per page.
+  const before = calls;
+  await ask({ type: 'fonts' });
+  assert.equal(calls, before);
+});
+
 test('failures map to the three quiet error codes', async () => {
   const cases = [
     [() => body(429, null), 'rate_limited'],
@@ -187,7 +203,7 @@ globalThis.document = dom.window.document;
 
 // content.js is a classic content script, so it has no exports to import. Run
 // it as a function body and take the renderers off the end.
-const panel = new Function(`${read('content.js')}\nreturn { renderCard };`)();
+const panel = new Function(`${read('content.js')}\nreturn { renderCard, registerFonts };`)();
 
 function render(card) {
   const node = document.createElement('div');
@@ -348,6 +364,79 @@ test('unparseable dates and currencies are dropped, not rendered raw', () => {
   assert.equal(node.querySelector('.fx-tile-label').textContent, 'Valuation');
   assert.equal(node.querySelector('.fx-round-date'), null);
   assert.equal(node.querySelector('.fx-round-amount'), null);
+});
+
+// ---------------------------------------------------------------------------
+// PP Mori. An @font-face inside a shadow root is ignored by Chrome, so the face
+// has to be registered on the document — but registering one that points at a
+// URL would make the page fetch the file, in full view of its Network tab. So
+// the worker sends bytes and the face is built from those.
+// ---------------------------------------------------------------------------
+
+const added = [];
+const built = [];
+
+function stubFontEnv(FontFaceImpl, reply) {
+  added.length = built.length = 0;
+  globalThis.FontFace = FontFaceImpl;
+  Object.defineProperty(document, 'fonts', {
+    value: { add: (font) => added.push(font) },
+    configurable: true,
+  });
+  chrome.runtime.sendMessage = async (message) => {
+    assert.deepEqual(message, { type: 'fonts' });
+    return reply;
+  };
+}
+
+class RecordingFontFace {
+  constructor(family, source, descriptors) {
+    built.push({ family, source, descriptors });
+  }
+  async load() {
+    return this;
+  }
+}
+
+test('PP Mori is registered on the document from bytes, never from a URL', async () => {
+  stubFontEnv(RecordingFontFace, [
+    { weight: 400, base64: btoa('regular-otf') },
+    { weight: 600, base64: btoa('semibold-otf') },
+  ]);
+
+  await panel.registerFonts();
+
+  assert.equal(added.length, 2);
+  assert.deepEqual(built.map((f) => f.family), ['PP Mori', 'PP Mori']);
+  assert.deepEqual(built.map((f) => f.descriptors.weight), ['400', '600']);
+  for (const font of built) {
+    assert.ok(
+      ArrayBuffer.isView(font.source),
+      'the face must be built from binary data — a string source would fetch a URL',
+    );
+  }
+  assert.equal(new TextDecoder().decode(built[0].source), 'regular-otf');
+});
+
+test('a font that will not load leaves the Helvetica fallback in place', async () => {
+  const cases = [
+    [
+      class {
+        constructor() {
+          throw new TypeError('unparseable font data');
+        }
+      },
+      [{ weight: 400, base64: btoa('junk') }],
+    ],
+    [RecordingFontFace, []], // every filename rotated out from under us
+    [RecordingFontFace, null], // worker unreachable
+    [RecordingFontFace, { error: 'unavailable' }], // worker answered with junk
+  ];
+  for (const [impl, reply] of cases) {
+    stubFontEnv(impl, reply);
+    await panel.registerFonts(); // must resolve, never reject
+    assert.equal(added.length, 0);
+  }
 });
 
 test('card text is set as text, so a hostile name cannot inject markup', () => {

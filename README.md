@@ -47,11 +47,35 @@ proxy returns only trimmed card JSON.
 { type: 'lookup', identifier } -> { found: true, card }
                                 | { found: false }
                                 | { error: 'rate_limited' | 'unavailable' | 'network' }
+
+// once per mounted page — see "PP Mori" below
+{ type: 'fonts' }            -> [{ weight, base64 }, …]
 ```
 
 `identifier: null` means don't show a card here — deny-listed or unrecognised.
 `init` also carries `panel.css` as text, since the content script can't read a packaged
 file without fetching it. The panel adopts it into its shadow root.
+
+## PP Mori
+
+**An `@font-face` declared inside a shadow root is ignored by Chrome — the file is never
+fetched.** So `panel.css` cannot load PP Mori on its own; the face has to be registered on
+the document. `content.js` does that in `registerFonts()`.
+
+Registering a face that points at a URL would make the *page* fetch the font, in full view
+of its Network tab — the one thing this extension exists to avoid. So the worker fetches
+the `.otf` bytes and the content script builds a `FontFace` from binary data, which loads
+no URL at all. It also sidesteps the host page's `font-src` CSP, since nothing is fetched.
+
+- Two weights exist, **400 and 600**, shipped as `.otf` (`format('opentype')`).
+- The family is registered as **`PP Mori`** — `panel.css` must ask for that exact name.
+- The URLs are hardcoded in `FONTS` at the top of `background.js` and their hashes rotate
+  on every Fundable deploy. When they go stale the fetch 404s and the card falls back to
+  Helvetica/Arial. That fallback is load-bearing: nothing in this path may throw, block, or
+  blank the render. The comment above `FONTS` has the two commands that find the new hashes.
+- The font is hotlinked rather than bundled because it's licensed to Fundable, not to this
+  extension. No `host_permissions` entry is needed — Vercel serves `/_next/static` with
+  `access-control-allow-origin: *`.
 
 ## Run it locally
 
