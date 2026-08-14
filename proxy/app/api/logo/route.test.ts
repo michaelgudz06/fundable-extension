@@ -45,6 +45,21 @@ describe('GET /api/logo', () => {
     expect(await res.text()).toBe('icon-bytes');
   });
 
+  it('answers a provider timeout with a PNG instead of an error', async () => {
+    const upstream = vi.fn(async () => {
+      throw new Error('The operation was aborted due to timeout');
+    });
+    vi.stubGlobal('fetch', upstream);
+    const { GET } = await loadRoute();
+
+    const res = await GET(req('domain=wealthsimple.com'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+
+    const [, init] = upstream.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
   it('does not serve a non-image content-type from the proxy origin', async () => {
     vi.stubGlobal(
       'fetch',

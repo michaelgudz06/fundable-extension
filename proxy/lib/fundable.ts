@@ -80,6 +80,8 @@ export function normalizeIdentifier(kind: IdKind, raw: string): Identifier | nul
   return slug ? { kind, key: `${kind}:${slug}`, upstream: base + slug } : null;
 }
 
+const UPSTREAM_TIMEOUT_MS = 8000;
+
 async function call(path: string, params: Record<string, string>, fallbackCredits: number) {
   const key = process.env.FUNDABLE_API_KEY;
   if (!key) throw new Error('FUNDABLE_API_KEY is not set');
@@ -87,7 +89,10 @@ async function call(path: string, params: Record<string, string>, fallbackCredit
   const url = new URL(base + path);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
-  const res = await fetch(url, { headers: { authorization: `Bearer ${key}` } });
+  const res = await fetch(url, {
+    headers: { authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+  });
   if (!res.ok) throw new UpstreamError(res.status, res.headers.get('retry-after') ?? undefined);
   const body = (await res.json()) as { data?: any; meta?: { credits_used?: number } };
   const used = Number(body.meta?.credits_used);

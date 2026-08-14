@@ -14,6 +14,8 @@ export type Cache = {
   recordMiss(identifier: string): Promise<void>;
 };
 
+const UPSTASH_TIMEOUT_MS = 3000;
+
 async function upstash(cmd: (string | number)[]): Promise<unknown> {
   const res = await fetch(process.env.UPSTASH_REDIS_REST_URL!, {
     method: 'POST',
@@ -22,6 +24,7 @@ async function upstash(cmd: (string | number)[]): Promise<unknown> {
       'content-type': 'application/json',
     },
     body: JSON.stringify(cmd),
+    signal: AbortSignal.timeout(UPSTASH_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`upstash ${res.status}`);
   return ((await res.json()) as { result: unknown }).result;
@@ -45,8 +48,10 @@ const redis: Cache = {
 };
 
 const store = new Map<string, { value: string; expiresAt: number }>();
-// Expired keys are otherwise only reclaimed by a get() that never comes (rate-limit buckets).
-const MAX_ENTRIES = 10_000;
+// Expired keys are otherwise only reclaimed by a get() that never comes (rate-limit buckets),
+// so a write past this size sweeps them. Live entries are never evicted: the real ceiling is
+// the number of unexpired keys — one 24h entry per distinct identifier looked up.
+const SWEEP_ABOVE = 10_000;
 
 const memory: Cache = {
   async get(key) {
@@ -59,7 +64,7 @@ const memory: Cache = {
     return hit.value;
   },
   async set(key, value, ttlSeconds) {
-    if (store.size > MAX_ENTRIES) {
+    if (store.size > SWEEP_ABOVE) {
       const now = Date.now();
       for (const [k, entry] of store) if (entry.expiresAt <= now) store.delete(k);
     }

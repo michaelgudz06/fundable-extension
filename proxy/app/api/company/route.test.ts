@@ -205,15 +205,77 @@ describe('GET /api/company', () => {
     expect(await res.json()).toEqual({ error: 'upstream_error' });
   });
 
-  it('keeps the guards on when their env values are not positive numbers', async () => {
-    process.env.RATE_LIMIT_PER_MIN = 'thirty';
-    process.env.DAILY_CREDIT_LIMIT = '-1';
-    stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+  it('returns the error envelope when an upstream request aborts', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const upstream = vi.fn(async () => {
+      throw new Error('The operation was aborted due to timeout');
+    });
+    vi.stubGlobal('fetch', upstream);
     const { GET } = await loadRoute();
 
-    expect((await GET(req('domain=first.com'))).status).toBe(200); // default ceiling of 500 applies
-    const res = await GET(req('domain=second.com'));
-    expect(res.status).toBe(200); // default per-minute limit of 30, not NaN
+    const res = await GET(req());
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'upstream_error' });
+
+    const [, init] = upstream.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  describe('guard env values', () => {
+    it('halts every lookup when DAILY_CREDIT_LIMIT is 0', async () => {
+      process.env.DAILY_CREDIT_LIMIT = '0';
+      const upstream = stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+      const { GET } = await loadRoute();
+
+      const res = await GET(req());
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'temporarily_unavailable' });
+      expect(upstream).not.toHaveBeenCalled();
+    });
+
+    it('refuses every request when RATE_LIMIT_PER_MIN is 0', async () => {
+      process.env.RATE_LIMIT_PER_MIN = '0';
+      const upstream = stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+      const { GET } = await loadRoute();
+
+      const res = await GET(req('domain=wealthsimple.com', { 'x-forwarded-for': '1.1.1.1' }));
+      expect(res.status).toBe(429);
+      expect(await res.json()).toEqual({ error: 'rate_limited' });
+      expect(upstream).not.toHaveBeenCalled();
+    });
+
+    it('falls back to both defaults when the values are negative', async () => {
+      process.env.RATE_LIMIT_PER_MIN = '-5';
+      process.env.DAILY_CREDIT_LIMIT = '-1';
+      stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+      const { GET } = await loadRoute();
+
+      expect((await GET(req())).status).toBe(200);
+    });
+
+    it('falls back to 30/min when RATE_LIMIT_PER_MIN is not a number', async () => {
+      process.env.RATE_LIMIT_PER_MIN = 'thirty';
+      stubUpstream();
+      const { GET } = await loadRoute();
+      const nth = (n: number) => GET(req(`domain=d${n}.com`, { 'x-forwarded-for': '9.9.9.9' }));
+
+      for (let i = 0; i < 30; i++) expect((await nth(i)).status).toBe(200);
+      expect((await nth(30)).status).toBe(429);
+    });
+
+    it('falls back to 500 credits when DAILY_CREDIT_LIMIT is not a number', async () => {
+      process.env.DAILY_CREDIT_LIMIT = 'five hundred';
+      const upstream = stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+      vi.resetModules();
+      const { getCache } = await import('../../../lib/cache');
+      const { GET } = await import('./route');
+      await getCache().incrByFloat(`credits:${new Date().toISOString().slice(0, 10)}`, 501, 60);
+
+      const res = await GET(req());
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'temporarily_unavailable' });
+      expect(upstream).not.toHaveBeenCalled();
+    });
   });
 
   it('stops calling Fundable once the daily credit ceiling is reached', async () => {
