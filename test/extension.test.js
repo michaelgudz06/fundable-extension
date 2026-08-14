@@ -7,11 +7,17 @@ const path = (p) => new URL(`../extension/${p}`, import.meta.url);
 const read = (p) => readFileSync(path(p), 'utf8');
 const manifest = JSON.parse(read('manifest.json'));
 
-// Every target of a CSS url(), in source order. A stylesheet is a declarative
-// artifact this repo owns, and the schemes of its references are the contract:
-// anything but data: is a request the host page issues on our behalf.
+// Every image reference a stylesheet makes, in source order. A stylesheet is a
+// declarative artifact this repo owns, and the schemes of its references are the
+// contract: anything but data: is a request the host page issues on our behalf.
+// image-set() is here because it takes a bare quoted string with no url() token,
+// which is exactly the shape a url()-only reader misses.
 function urlTargets(css) {
-  return [...css.matchAll(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi)].map((m) => m[2].trim());
+  const targets = [...css.matchAll(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi)].map((m) => m[2].trim());
+  for (const [, inner] of css.matchAll(/(?:-webkit-)?image-set\(([^)]*)\)/gi)) {
+    targets.push(...[...inner.matchAll(/(['"])([^'"]*)\1/g)].map((m) => m[2].trim()));
+  }
+  return targets;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,8 +68,9 @@ test('manifest keeps network permission scoped and the extension ID pinned', () 
   assert.ok(manifest.key, 'manifest needs a pinned key for a stable extension ID');
   assert.equal(manifest.background.type, 'module');
   assert.deepEqual(manifest.content_scripts[0].js, ['content.js']);
-  // The Navigation API, which content.js needs to see SPA navigation, is Chrome 102+.
-  assert.equal(manifest.minimum_chrome_version, '102');
+  // The floor is the highest API the code uses: AbortSignal.timeout in the
+  // worker's fetches (Chrome 103), above the Navigation API's 102.
+  assert.equal(manifest.minimum_chrome_version, '103');
   for (const host of manifest.host_permissions) {
     assert.doesNotMatch(host, /<all_urls>|\*:\/\/\*\//, 'host_permissions must name the proxy only');
   }
@@ -125,14 +132,31 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
         '@import "https://cdn.example.com/reset.css";\n' +
         '.fx-panel{background:url("https://cdn.example.com/bg.png")}\n' +
         '.fx-logo{mask:url(/local/icon.svg)}\n' +
-        '.fx-pill{background:url("data:image/gif;base64,R0lGOD")}\n',
+        '.fx-chip{background-image:-webkit-image-set("https://cdn.example.com/chip.png" 1x)}\n' +
+        '.fx-pill{background:url("data:image/gif;base64,R0lGOD")}\n' +
+        '.fx-footer::after{content:"https://survivor.example.com"}\n',
     };
   };
-  const res = await ask({ type: 'init', url: 'https://www.linkedin.com/company/stripe' });
+  const warnings = [];
+  const realWarn = console.warn;
+  console.warn = (message) => warnings.push(message);
+  let res;
+  try {
+    res = await ask({ type: 'init', url: 'https://www.linkedin.com/company/stripe' });
+  } finally {
+    console.warn = realWarn;
+  }
+
   assert.ok('identifier' in res, 'init must report the resolver verdict');
   assert.deepEqual(urlTargets(res.css), ['data:image/gif;base64,R0lGOD']);
   assert.doesNotMatch(res.css, /@import/, 'a bare @import fetches too');
+  assert.doesNotMatch(res.css, /cdn\.example\.com/, 'image-set carries a bare string, not a url()');
   assert.match(res.css, /\.fx-pill\{background:/, 'only the references are stripped, not the rules');
+
+  assert.match(warnings.join('\n'), /https:\/\/cdn\.example\.com\/bg\.png/, 'a silent strip is a mystery');
+  // The survivor warning is the durable half: the next construct nobody
+  // anticipated stays diagnosable instead of leaking quietly.
+  assert.match(warnings.join('\n'), /survivor\.example\.com/);
 });
 
 const CARD = {
@@ -548,27 +572,32 @@ test('card text is set as text, so a hostile name cannot inject markup', () => {
 // ---------------------------------------------------------------------------
 
 test('the pill follows same-document navigation without ever doubling up', async () => {
-  const navigate = [];
+  const listeners = {};
   globalThis.navigation = {
-    addEventListener: (type, fn) => {
-      assert.equal(type, 'navigate');
-      navigate.push(fn);
-    },
+    addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
   };
   globalThis.location = { href: 'https://www.linkedin.com/feed/' };
 
   const COMPANY = /\/company\//;
+  let fontRequests = 0;
   chrome.runtime.sendMessage = async (message) => {
-    if (message.type === 'fonts') return null;
+    if (message.type === 'fonts') return fontRequests++, null;
     assert.equal(message.type, 'init');
     return { identifier: COMPANY.test(message.url) ? { kind: 'linkedin', value: message.url } : null, css: '' };
   };
 
   const hosts = () => document.querySelectorAll('#fundable-extension-root');
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  // The real platform ordering, which is the whole point of this stub:
+  // `navigate` is the interception point and fires while location.href still
+  // holds the page being LEFT — only `destination.url` names the target — and
+  // `navigatesuccess` fires after the URL commits. A handler that reads
+  // location.href from `navigate` resolves the wrong page in both directions.
   const go = async (url) => {
+    for (const fn of listeners.navigate ?? []) fn({ destination: { url } });
     location.href = url;
-    for (const fn of navigate) fn();
+    for (const fn of listeners.navigatesuccess ?? []) fn({});
     await settle();
   };
 
@@ -576,13 +605,19 @@ test('the pill follows same-document navigation without ever doubling up', async
     panel.start();
     await settle();
     assert.equal(hosts().length, 0, 'no pill where the resolver says null');
-    assert.equal(navigate.length, 1, 'start must subscribe to navigation');
+    assert.equal(
+      Object.values(listeners).flat().length,
+      1,
+      'exactly one navigation subscription — two would re-resolve every route twice',
+    );
 
     await go('https://www.linkedin.com/company/stripe');
     assert.equal(hosts().length, 1, 'routing to a company page must mount the pill');
 
     await go('https://www.linkedin.com/company/ramp');
     assert.equal(hosts().length, 1, 'routing on must not leave the previous host behind');
+
+    assert.equal(fontRequests, 1, 'the faces belong to the document, not to each mount');
 
     await go('https://www.linkedin.com/feed/');
     assert.equal(hosts().length, 0, 'routing away must unmount the pill, not just hide it');

@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "minimum_chrome_version": "102",
+  "minimum_chrome_version": "103",
   "name": "Fundable",
   "version": "0.1.0",
   "description": "See who a company is and what they raised — from their website, LinkedIn, or Crunchbase.",
