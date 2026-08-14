@@ -86,12 +86,14 @@ const DENY_TLDS = new Set([
   'test', 'invalid', 'example', 'arpa',
 ]);
 
-// Government-ish labels in the public-suffix position: gov.uk, gob.mx, gouv.fr,
-// govt.nz, nhs.uk, mil.br.
+// Government-ish labels. Matched against every host label, whatever the
+// reduction table below says about that TLD: gov.uk, gob.mx, gob.es, gouv.qc.ca,
+// govt.nz, nhs.uk, mil.pt.
 const DENY_SUFFIX_LABELS = new Set(['gov', 'gob', 'gouv', 'govt', 'mil', 'nhs', 'police']);
 
-// Auth surfaces. Matched against a whole host label, a whole path segment or a
-// whole hash-route segment ("#/login"), never against a plain anchor ("#login"),
+// Auth surfaces. Matched against a whole subdomain label, a whole path segment,
+// a whole hash-route segment ("#/login") and a bare fragment on a bare path
+// ("acme.com/#login"), but not an anchor on a real page ("/pricing#signup"),
 // with `-` and `_` stripped first, so one entry covers sign-in / sign_in / signin
 // but a compound segment does not match: /blog/oauth-explained is "oauthexplained",
 // so it resolves normally, while /login and /sign_in deny.
@@ -107,9 +109,10 @@ const AUTH_WORDS = new Set([
   'onboarding',
 ]);
 
-// Extra host-only labels ("my.acme.com" is a customer portal, not a homepage;
-// "mail.acme.com" is somebody's open inbox). Checked after LinkedIn/Crunchbase,
-// so locale hosts like my.linkedin.com and id.linkedin.com still resolve.
+// Extra host labels, read over the subdomain only ("my.acme.com" is a customer
+// portal, not a homepage; "mail.acme.com" is somebody's open inbox), so the .id,
+// .my and .email namespaces are not their own portals. Checked after
+// LinkedIn/Crunchbase, so my.linkedin.com and id.linkedin.com still resolve.
 const AUTH_HOST_LABELS = new Set(['my', 'portal', 'identity', 'passport', 'id',
   'signin', 'login', 'mail', 'webmail', 'inbox', 'email', 'owa']);
 
@@ -199,6 +202,7 @@ export function resolveIdentifier(url) {
 
   const word = (s) => s.toLowerCase().replace(/[-_]/g, '');
   if ([...segments, ...routes].some((s) => AUTH_WORDS.has(word(s)))) return null;
+  if (u.pathname === '/' && AUTH_WORDS.has(word(hashPath))) return null;
   const params = [...u.searchParams.keys(),
     ...new URLSearchParams(hashQuery ?? hashPath).keys()];
   if (params.some((p) => AUTH_PARAMS.has(word(p)))) return null;
@@ -208,7 +212,7 @@ export function resolveIdentifier(url) {
 
   const parts = domain.split('.');
   if (DENY_TLDS.has(parts[parts.length - 1])) return null;
-  if (parts.length === 3 && DENY_SUFFIX_LABELS.has(parts[1])) return null;
+  if (labels.some((l) => DENY_SUFFIX_LABELS.has(l))) return null;
   if (DENY_BRANDS.has(parts[0])) return null;
 
   // Deny the host and every parent: app.slack.com dies on "slack.com".
@@ -230,7 +234,8 @@ export function resolveIdentifier(url) {
       : null;
   }
 
-  if (labels.some((l) => AUTH_WORDS.has(word(l)) || AUTH_HOST_LABELS.has(word(l)))) return null;
+  const sub = labels.slice(0, labels.length - domain.split('.').length);
+  if (sub.some((l) => AUTH_WORDS.has(word(l)) || AUTH_HOST_LABELS.has(word(l)))) return null;
 
   return { kind: 'domain', value: domain };
 }

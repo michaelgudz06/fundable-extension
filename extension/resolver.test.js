@@ -63,6 +63,15 @@ resolves('a suffix label under another TLD is the registrant, not a suffix', 'do
   ['https://www.ltd.ai/', 'ltd.ai'],
 ]);
 
+// A country's own suffix labels are not somebody's auth subdomain: the .id, .my
+// and .email namespaces belong to companies, not to portals named id/my/email.
+resolves('a public suffix that collides with an auth label still resolves', 'domain', [
+  ['https://www.tokopedia.co.id/', 'tokopedia.co.id'],
+  ['https://www.gojek.co.id/', 'gojek.co.id'],
+  ['https://www.grab.com.my/', 'grab.com.my'],
+  ['https://acme.email/', 'acme.email'],
+]);
+
 resolves('lookalike hosts resolve to the real registrant, not the brand', 'domain', [
   ['https://stripe.com.evil.co/', 'evil.co'],
   ['https://www.stripe.com.evil.co/login-page', 'evil.co'],
@@ -175,6 +184,16 @@ denies('banking, payments, healthcare, government', [
   'https://www.gov.uk/vehicle-tax',
   'https://www.defense.mil/',
   'https://www.gob.mx/tramites',
+  // A government label denies wherever it sits, however the host reduces:
+  // gob.es and mil.pt reduce to two labels, gouv.qc.ca hides behind qc.ca.
+  'https://gob.mx/',
+  'https://www.gob.es/',
+  'https://www.gob.pe/',
+  'https://www.gouv.qc.ca/',
+  'https://www.exercito.mil.pt/',
+  'https://www.police.uk/',
+  'https://www.govt.nz/',
+  'https://sede.administracion.gob.es/',
 ]);
 
 denies('webmail and messaging', [
@@ -248,7 +267,15 @@ resolves('ordinary anchors are not routes', 'domain', [
   ['https://acme.com/pricing#billing', 'acme.com'],
   ['https://acme.com/about#connect', 'acme.com'],
   ['https://acme.com/product#dashboard', 'acme.com'],
-  ['https://acme.com/#login', 'acme.com'],
+]);
+
+// ...but a bare auth word on a bare path is how hash routers older than the
+// "#/" convention address a login screen, and when in doubt the answer is null.
+denies('a bare auth-word fragment on a root path', [
+  'https://acme.com/#login',
+  'https://acme.com/#signin',
+  'https://acme.com#sign-in',
+  'https://acme.com/#reset_password',
 ]);
 
 resolves('a linkedin company page keeps its anchor', 'linkedin', [
