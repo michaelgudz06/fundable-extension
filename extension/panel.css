@@ -43,10 +43,13 @@
    properties, so `all` neutralises every one of them — including the ones a
    hand-written list would never think to name. Only the exceptions need
    naming: `direction` and `unicode-bidi` are excluded from `all` by spec, and
-   `box-sizing`/`list-style` are re-declared because the card needs values
-   other than their initial ones. Applied here rather than on `:host` because
-   document styles outrank `:host` for the host element, but never reach an
-   element inside the shadow tree. */
+   `box-sizing` is re-declared because the card needs a value other than its
+   initial one. `list-style: none` belongs in the descendant reset below, not
+   here — on the root it loses to the UA's own `ul { list-style-type: disc }`.
+   `all` also outranks the UA's `:focus-visible` ring, so .fx-pill re-declares
+   one. Applied here rather than on `:host` because document styles outrank
+   `:host` for the host element, but never reach an element inside the shadow
+   tree. */
 
 .fx-panel,
 .fx-pill {
@@ -107,6 +110,14 @@
   background: var(--fx-ink-hover);
 }
 
+/* Inset against the pill's own black fill, so the ring never depends on what
+   the host page paints behind it. */
+
+.fx-pill:focus-visible {
+  outline: 2px solid var(--fx-surface);
+  outline-offset: -5px;
+}
+
 /* Card */
 
 .fx-panel {
@@ -114,6 +125,7 @@
   top: 56px;
   right: 16px;
   z-index: 2147483647;
+  display: block;
   width: 340px;
   max-height: calc(100vh - 72px);
   overflow-y: auto;
