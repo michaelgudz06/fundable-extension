@@ -52,6 +52,17 @@ resolves('multi-part public suffixes are not split naively', 'domain', [
   ['https://example.ac.nz/', 'example.ac.nz'],
 ]);
 
+// A label is only a public suffix under the TLDs where it genuinely is one:
+// co.uk is, web.de is not, so one site never gets two lookup keys.
+resolves('a suffix label under another TLD is the registrant, not a suffix', 'domain', [
+  ['https://web.de/', 'web.de'],
+  ['https://www.web.de/', 'web.de'],
+  ['https://blog.web.de/', 'web.de'],
+  ['https://www.info.de/', 'info.de'],
+  ['https://www.biz.co/', 'biz.co'],
+  ['https://www.ltd.ai/', 'ltd.ai'],
+]);
+
 resolves('lookalike hosts resolve to the real registrant, not the brand', 'domain', [
   ['https://stripe.com.evil.co/', 'evil.co'],
   ['https://www.stripe.com.evil.co/login-page', 'evil.co'],
@@ -79,6 +90,9 @@ resolves('linkedin company pages', 'linkedin', [
   ['https://www.linkedin.com/company/stripe/jobs?trk=nav', 'https://www.linkedin.com/company/stripe'],
   ['https://www.linkedin.com/company/Stripe?originalSubdomain=ca', 'https://www.linkedin.com/company/stripe'],
   ['https://www.linkedin.com/company/some-co-2024/', 'https://www.linkedin.com/company/some-co-2024'],
+  // Locale subdomains that collide with auth host labels: Malaysia, Indonesia.
+  ['https://my.linkedin.com/company/stripe', 'https://www.linkedin.com/company/stripe'],
+  ['https://id.linkedin.com/company/stripe', 'https://www.linkedin.com/company/stripe'],
 ]);
 
 denies('linkedin non-company pages', [
@@ -172,6 +186,10 @@ denies('webmail and messaging', [
   'https://discord.com/channels/@me',
   'https://teams.microsoft.com/',
   'https://mail.yahoo.com/',
+  // A company running its own webmail is still an open inbox.
+  'https://mail.acme.com/',
+  'https://webmail.acme.com/',
+  'https://inbox.acme.com/',
 ]);
 
 denies('auth, SSO, OAuth and password-reset flows', [
@@ -194,6 +212,22 @@ denies('auth, SSO, OAuth and password-reset flows', [
   // OAuth in flight on an otherwise ordinary host
   'https://acme.com/consent-screen?client_id=123&redirect_uri=https://x.co/cb',
   'https://acme.com/x?response_type=code&client_id=abc',
+  // Parameter names are matched case-insensitively...
+  'https://fs.contoso.com/adfs/ls/?SAMLRequest=abc',
+  'https://acme.com/x?SAMLResponse=abc&RelayState=y&samlrequest=z',
+  'https://acme.com/x?stateToken=abc',
+  'https://acme.com/x?Client-Id=abc',
+  // ...and implicit-flow tokens land in the fragment, not the query.
+  'https://acme.com/cb#access_token=abc&token_type=bearer',
+  'https://acme.com/cb#id_token=abc',
+]);
+
+// Whole host labels and whole path segments only, after `-`/`_` are stripped —
+// so ordinary marketing paths that merely contain an auth word still resolve.
+resolves('auth words match whole segments, not substrings', 'domain', [
+  ['https://acme.com/blog/oauth-explained', 'acme.com'],
+  ['https://acme.com/design/campaign', 'acme.com'],
+  ['https://acme.com/blog/how-we-do-login-security', 'acme.com'],
 ]);
 
 denies('search engines, social feeds and general-purpose sites', [

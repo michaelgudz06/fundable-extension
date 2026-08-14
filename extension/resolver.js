@@ -91,7 +91,9 @@ const DENY_TLDS = new Set([
 const DENY_SUFFIX_LABELS = new Set(['gov', 'gob', 'gouv', 'govt', 'mil', 'nhs', 'police']);
 
 // Auth surfaces. Matched against a whole host label or a whole path segment,
-// with `-` and `_` stripped first, so one entry covers sign-in / sign_in / signin.
+// with `-` and `_` stripped first, so one entry covers sign-in / sign_in / signin
+// but a compound segment does not match: /blog/oauth-explained is "oauthexplained",
+// so it resolves normally, while /login and /sign_in deny.
 const AUTH_WORDS = new Set([
   'login', 'logon', 'signin', 'signon', 'logout', 'signout', 'signup', 'register',
   'registration', 'auth', 'auth0', 'oauth', 'oauth2', 'openid', 'connect', 'sso',
@@ -104,20 +106,48 @@ const AUTH_WORDS = new Set([
   'onboarding',
 ]);
 
-// Extra host-only prefixes ("my.acme.com" is a customer portal, not a homepage).
-const AUTH_HOST_LABELS = new Set(['my', 'portal', 'identity', 'passport', 'id', 'signin', 'login']);
+// Extra host-only labels ("my.acme.com" is a customer portal, not a homepage;
+// "mail.acme.com" is somebody's open inbox). Checked after LinkedIn/Crunchbase,
+// so locale hosts like my.linkedin.com and id.linkedin.com still resolve.
+const AUTH_HOST_LABELS = new Set(['my', 'portal', 'identity', 'passport', 'id',
+  'signin', 'login', 'mail', 'webmail', 'inbox']);
 
-// OAuth / OIDC in flight, whatever the host says.
-const AUTH_PARAMS = ['client_id', 'redirect_uri', 'response_type', 'code_challenge',
-  'id_token', 'access_token', 'samlrequest', 'saml_request', 'state_token'];
+// OAuth / OIDC / SAML in flight, whatever the host says. Matched against query
+// AND fragment parameter names, lowercased with `-` and `_` stripped, so one
+// entry covers SAMLRequest, saml_request and #access_token.
+const AUTH_PARAMS = new Set(['clientid', 'redirecturi', 'responsetype',
+  'codechallenge', 'idtoken', 'accesstoken', 'samlrequest', 'samlresponse',
+  'relaystate', 'statetoken']);
 
 // Second-level labels that act as a public suffix under a 2-letter ccTLD:
 // example.co.uk, example.com.au, example.ac.nz. A naive last-two split gets "co.uk".
-const PUBLIC_SLDS = new Set([
-  'co', 'com', 'net', 'org', 'edu', 'gov', 'gob', 'gouv', 'govt', 'mil', 'ac', 'or',
-  'ne', 'go', 'in', 'ltd', 'plc', 'sch', 'nom', 'info', 'biz', 'me', 'web', 'asn',
-  'id', 'res', 'priv', 'k12', 'nhs', 'police',
-]);
+// Keyed by TLD, because a label is only a suffix under the TLDs that say so —
+// `web` is one under .za but not under .de, so www.web.de stays web.de.
+// The '*' row holds under any 2-letter ccTLD; add a label to its TLD's row.
+const PUBLIC_SLDS = new Map(Object.entries({
+  '*': 'co com net org edu gov ac',
+  uk: 'me ltd plc sch mod nhs police',
+  au: 'asn id',
+  nz: 'govt school geek gen',
+  za: 'web nom',
+  jp: 'ne or go gr ed lg',
+  kr: 'ne or re pe go',
+  cn: 'mil',
+  in: 'firm gen ind res nic',
+  id: 'or go sch web biz my',
+  br: 'mil',
+  mx: 'gob',
+  ar: 'gob mil',
+  co: 'mil nom',
+  il: 'muni',
+  tr: 'bel pol k12',
+  ru: 'int mil',
+  pl: 'biz waw',
+  fr: 'gouv asso tm nom prd',
+  hk: 'idv',
+  sg: 'per',
+  th: 'or go in mi',
+}));
 
 const DENIED = new Set(Object.values(DENY_HOSTS).flat());
 const MAX_URL = 2048;
@@ -129,10 +159,11 @@ const TLD = /^(xn--[a-z0-9-]+|[a-z]{2,63})$/;
 function registrable(host) {
   const labels = host.split('.');
   if (labels.length < 2 || labels.some((l) => l === '')) return null;
-  if (!TLD.test(labels[labels.length - 1])) return null; // IP literals, hex hosts
-  const take = labels.length > 2 &&
-    labels[labels.length - 1].length === 2 &&
-    PUBLIC_SLDS.has(labels[labels.length - 2]) ? 3 : 2;
+  const tld = labels[labels.length - 1];
+  if (!TLD.test(tld)) return null; // IP literals, hex hosts
+  const slds = `${PUBLIC_SLDS.get('*')} ${PUBLIC_SLDS.get(tld) ?? ''}`.split(' ');
+  const take = labels.length > 2 && tld.length === 2 &&
+    slds.includes(labels[labels.length - 2]) ? 3 : 2;
   return labels.slice(-take).join('.');
 }
 
@@ -159,10 +190,10 @@ export function resolveIdentifier(url) {
   const labels = host.split('.');
   const segments = u.pathname.split('/').filter(Boolean).map((s) => s.toLowerCase());
 
-  const word = (s) => s.replace(/[-_]/g, '');
-  if (labels.some((l) => AUTH_WORDS.has(word(l)) || AUTH_HOST_LABELS.has(l))) return null;
+  const word = (s) => s.toLowerCase().replace(/[-_]/g, '');
   if (segments.some((s) => AUTH_WORDS.has(word(s)))) return null;
-  if (AUTH_PARAMS.some((p) => u.searchParams.has(p))) return null;
+  const params = [...u.searchParams.keys(), ...new URLSearchParams(u.hash.slice(1)).keys()];
+  if (params.some((p) => AUTH_PARAMS.has(word(p)))) return null;
 
   const domain = registrable(host);
   if (!domain) return null; // IPs, single-label hosts, junk
@@ -190,6 +221,8 @@ export function resolveIdentifier(url) {
       ? { kind: 'crunchbase', value: `https://www.crunchbase.com/organization/${slug}` }
       : null;
   }
+
+  if (labels.some((l) => AUTH_WORDS.has(word(l)) || AUTH_HOST_LABELS.has(word(l)))) return null;
 
   return { kind: 'domain', value: domain };
 }
