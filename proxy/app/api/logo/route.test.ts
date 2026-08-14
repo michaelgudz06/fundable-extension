@@ -60,6 +60,25 @@ describe('GET /api/logo', () => {
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it('falls back to the PNG when the provider body fails mid-transfer', async () => {
+    const truncated = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3]));
+        controller.error(new Error('The operation was aborted due to timeout'));
+      },
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(truncated, { headers: { 'content-type': 'image/x-icon' } })),
+    );
+    const { GET } = await loadRoute();
+
+    const res = await GET(req('domain=wealthsimple.com'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('image/png');
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
   it('does not serve a non-image content-type from the proxy origin', async () => {
     vi.stubGlobal(
       'fetch',

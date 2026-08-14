@@ -244,6 +244,22 @@ describe('GET /api/company', () => {
       expect(upstream).not.toHaveBeenCalled();
     });
 
+    it('uses the default per-minute limit when RATE_LIMIT_PER_MIN is blank', async () => {
+      process.env.RATE_LIMIT_PER_MIN = '';
+      stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+      const { GET } = await loadRoute();
+
+      expect((await GET(req())).status).toBe(200);
+    });
+
+    it('uses the default credit ceiling when DAILY_CREDIT_LIMIT is whitespace', async () => {
+      process.env.DAILY_CREDIT_LIMIT = '   ';
+      stubUpstream([200, SEARCH_HIT], [200, COMPANY], [200, INVESTORS]);
+      const { GET } = await loadRoute();
+
+      expect((await GET(req())).status).toBe(200);
+    });
+
     it('falls back to both defaults when the values are negative', async () => {
       process.env.RATE_LIMIT_PER_MIN = '-5';
       process.env.DAILY_CREDIT_LIMIT = '-1';

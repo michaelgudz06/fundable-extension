@@ -75,8 +75,8 @@ for production.
 | `ALLOWED_EXTENSION_ORIGIN` | production | the extension's pinned origin, `chrome-extension://<id>`. **Unset means every request carrying an `Origin` header is refused** — set it once the MV3 build pins its ID. Requests with no `Origin` (curl, server-to-server) are allowed. |
 | `UPSTASH_REDIS_REST_URL` | no | with the token below, switches the cache to Upstash |
 | `UPSTASH_REDIS_REST_TOKEN` | no | |
-| `RATE_LIMIT_PER_MIN` | no | per IP, default 30 |
-| `DAILY_CREDIT_LIMIT` | no | default 500; over it, every lookup returns `temporarily_unavailable` |
+| `RATE_LIMIT_PER_MIN` | no | per IP, default 30. Blank or unset uses the default; `0` is a deliberate lever that refuses all traffic |
+| `DAILY_CREDIT_LIMIT` | no | default 500; over it, every lookup returns `temporarily_unavailable`. Blank or unset uses the default; `0` is a deliberate lever that halts all spend |
 | `KILL_SWITCH` | no | `1` makes every lookup return `temporarily_unavailable` without calling Fundable |
 
 **Cache:** without the two Upstash variables the cache is an in-process `Map`, which does

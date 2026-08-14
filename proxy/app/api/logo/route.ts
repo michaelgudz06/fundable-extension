@@ -32,7 +32,8 @@ export async function GET(req: Request) {
     });
     if (!res.ok) return blank();
     const type = res.headers.get('content-type');
-    return new Response(res.body, {
+    const body = await res.arrayBuffer();
+    return new Response(body, {
       headers: {
         'content-type': type?.startsWith('image/') ? type : 'image/png',
         'cache-control': 'public, max-age=604800, immutable',
