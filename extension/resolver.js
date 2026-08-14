@@ -97,7 +97,7 @@ const DENY_SUFFIX_LABELS = new Set(['gov', 'gob', 'gouv', 'govt', 'mil', 'nhs', 
 const AUTH_WORDS = new Set([
   'login', 'logon', 'signin', 'signon', 'logout', 'signout', 'signup', 'register',
   'registration', 'auth', 'auth0', 'oauth', 'oauth2', 'openid', 'connect', 'sso',
-  'saml', 'idp', 'authorize', 'authorization', 'authentication', 'session',
+  'saml', 'adfs', 'idp', 'authorize', 'authorization', 'authentication', 'session',
   'sessions', 'password', 'passwords', 'passwd', 'forgot', 'forgotpassword',
   'reset', 'resetpassword', 'recover', 'recovery', 'mfa', '2fa', 'otp', 'verify',
   'verification', 'confirm', 'consent', 'token', 'account', 'accounts',
@@ -110,14 +110,14 @@ const AUTH_WORDS = new Set([
 // "mail.acme.com" is somebody's open inbox). Checked after LinkedIn/Crunchbase,
 // so locale hosts like my.linkedin.com and id.linkedin.com still resolve.
 const AUTH_HOST_LABELS = new Set(['my', 'portal', 'identity', 'passport', 'id',
-  'signin', 'login', 'mail', 'webmail', 'inbox']);
+  'signin', 'login', 'mail', 'webmail', 'inbox', 'email', 'owa']);
 
-// OAuth / OIDC / SAML in flight, whatever the host says. Matched against query
-// AND fragment parameter names, lowercased with `-` and `_` stripped, so one
-// entry covers SAMLRequest, saml_request and #access_token.
+// OAuth / OIDC / SAML / WS-Federation in flight, whatever the host says. Matched
+// against query AND fragment parameter NAMES, lowercased with `-` and `_`
+// stripped, so one entry covers SAMLRequest, saml_request and #access_token.
 const AUTH_PARAMS = new Set(['clientid', 'redirecturi', 'responsetype',
   'codechallenge', 'idtoken', 'accesstoken', 'samlrequest', 'samlresponse',
-  'relaystate', 'statetoken']);
+  'relaystate', 'statetoken', 'wa', 'wtrealm', 'wreply', 'wctx']);
 
 // Second-level labels that act as a public suffix under a 2-letter ccTLD:
 // example.co.uk, example.com.au, example.ac.nz. A naive last-two split gets "co.uk".
@@ -189,10 +189,15 @@ export function resolveIdentifier(url) {
 
   const labels = host.split('.');
   const segments = u.pathname.split('/').filter(Boolean).map((s) => s.toLowerCase());
+  // Hash routes: "#/login", "#!/login", "#/oauth/authorize?client_id=..." are
+  // paths, not anchors, and "#access_token=..." is a parameter list.
+  const [hashPath, hashQuery] = u.hash.slice(1).split('?');
+  const routes = hashPath.replace(/^!/, '').split('/').filter(Boolean);
 
   const word = (s) => s.toLowerCase().replace(/[-_]/g, '');
-  if (segments.some((s) => AUTH_WORDS.has(word(s)))) return null;
-  const params = [...u.searchParams.keys(), ...new URLSearchParams(u.hash.slice(1)).keys()];
+  if ([...segments, ...routes].some((s) => AUTH_WORDS.has(word(s)))) return null;
+  const params = [...u.searchParams.keys(),
+    ...new URLSearchParams(hashQuery ?? hashPath).keys()];
   if (params.some((p) => AUTH_PARAMS.has(word(p)))) return null;
 
   const domain = registrable(host);

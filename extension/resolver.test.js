@@ -190,6 +190,8 @@ denies('webmail and messaging', [
   'https://mail.acme.com/',
   'https://webmail.acme.com/',
   'https://inbox.acme.com/',
+  'https://email.acme.com/',
+  'https://owa.acme.com/',
 ]);
 
 denies('auth, SSO, OAuth and password-reset flows', [
@@ -199,6 +201,7 @@ denies('auth, SSO, OAuth and password-reset flows', [
   'https://auth.stripe.com/',
   'https://sso.acme.com/',
   'https://id.atlassian.com/login',
+  'https://id.acme.com/',   // bare host: only the host-label rule can deny this
   'https://my.acme.com/',
   'https://acme.com/login',
   'https://acme.com/users/sign_in',
@@ -220,6 +223,29 @@ denies('auth, SSO, OAuth and password-reset flows', [
   // ...and implicit-flow tokens land in the fragment, not the query.
   'https://acme.com/cb#access_token=abc&token_type=bearer',
   'https://acme.com/cb#id_token=abc',
+  // AD FS WS-Federation: denied by the path, by the parameters, or by both.
+  'https://sts.example-corp.com/adfs/ls/?wa=wsignin1.0&wtrealm=urn:acme',
+  'https://sts.example-corp.com/adfs/ls/',
+  'https://sts.example-corp.com/ls/?wa=wsignin1.0&wtrealm=urn:acme',
+  'https://sts.example-corp.com/ls/?wreply=https://acme.com/&wctx=abc',
+]);
+
+denies('hash-routed auth screens', [
+  'https://acme.com/#/login',
+  'https://acme.com/#/signin',
+  'https://acme.com/#!/signin',
+  'https://acme.com/#/oauth/authorize',
+  'https://acme.com/#/reset-password',
+  'https://acme.com/#/oauth/authorize?client_id=abc',
+]);
+
+resolves('ordinary anchors are not routes', 'domain', [
+  ['https://acme.com/#pricing', 'acme.com'],
+  ['https://acme.com/about#our-team', 'acme.com'],
+]);
+
+resolves('a linkedin company page keeps its anchor', 'linkedin', [
+  ['https://www.linkedin.com/company/stripe#about', 'https://www.linkedin.com/company/stripe'],
 ]);
 
 // Whole host labels and whole path segments only, after `-`/`_` are stripped —
