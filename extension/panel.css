@@ -37,26 +37,28 @@
   --fx-green: #00A76F;
   --fx-green-text: #007850;
   --fx-red-text: #C74325;
+}
+
+/* A hostile host page reaches into the shadow tree only through inherited
+   properties, so `all` neutralises every one of them — including the ones a
+   hand-written list would never think to name. Only the exceptions need
+   naming: `direction` and `unicode-bidi` are excluded from `all` by spec, and
+   `box-sizing`/`list-style` are re-declared because the card needs values
+   other than their initial ones. Applied here rather than on `:host` because
+   document styles outrank `:host` for the host element, but never reach an
+   element inside the shadow tree. */
+
+.fx-panel,
+.fx-pill {
+  all: initial;
+  direction: ltr;
+  unicode-bidi: normal;
 
   box-sizing: border-box;
-
-  /* A hostile host page can only reach into the shadow tree through inherited
-     properties. Neutralising them at the root covers the whole card. */
   font-family: 'PP Mori', Helvetica, Arial, sans-serif;
   font-size: 13px;
-  font-weight: 400;
-  font-style: normal;
   line-height: 1.45;
-  letter-spacing: normal;
-  word-spacing: normal;
-  text-align: left;
-  text-indent: 0;
-  text-transform: none;
-  white-space: normal;
   color: var(--fx-muted);
-  direction: ltr;
-  list-style: none;
-  visibility: visible;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -70,6 +72,7 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+  list-style: none;
 }
 
 :where(.fx-panel) a {
@@ -219,14 +222,11 @@
   text-overflow: ellipsis;
 }
 
-/* Latest round — 12px on the block itself so the unclassed native-currency
-   line sits below the amount rather than above the date and source. */
+/* Latest round — 12px on the block itself, so the head, date, source and the
+   unclassed native-currency line all inherit one size and only the amount
+   overrides it. */
 
 .fx-round {
-  font-size: 12px;
-}
-
-.fx-round-head {
   font-size: 12px;
 }
 
@@ -236,11 +236,6 @@
   font-weight: 600;
   line-height: 1.2;
   color: var(--fx-ink);
-}
-
-.fx-round-date,
-.fx-round-source {
-  font-size: 12px;
 }
 
 .fx-round-source:hover {
