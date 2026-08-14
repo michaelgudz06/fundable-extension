@@ -31,11 +31,14 @@ export async function GET(req: Request) {
       signal: AbortSignal.timeout(FAVICON_TIMEOUT_MS),
     });
     if (!res.ok) return blank();
-    const type = res.headers.get('content-type');
+    const type = res.headers.get('content-type') ?? '';
     const body = await res.arrayBuffer();
+    // Fail toward the blank pixel. Relabelling non-image bytes `image/png` only moves the
+    // failure into the panel, where an <img> renders them as a broken-image icon.
+    if (!type.startsWith('image/') || body.byteLength === 0) return blank();
     return new Response(body, {
       headers: {
-        'content-type': type?.startsWith('image/') ? type : 'image/png',
+        'content-type': type,
         'cache-control': 'public, max-age=604800, immutable',
         'x-content-type-options': 'nosniff',
       },

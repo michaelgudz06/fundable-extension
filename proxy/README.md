@@ -49,9 +49,11 @@ Errors are `{"error": "<code>"}`:
 ### `GET /api/logo?domain=`
 
 Proxies a favicon provider so the panel never hits a third party directly. Always `200`
-with an image (a 1×1 transparent PNG when the domain is unknown or the provider fails), so
-an `<img src>` never breaks. Cached a week. No CORS check — it exposes nothing, and an
-`<img>` sends no `Origin`.
+with an image, so an `<img src>` never breaks: anything short of usable image bytes —
+unknown domain, provider failure, non-image content type, empty body — falls back to a 1×1
+transparent PNG rather than being passed through. A real logo is cached a week; the
+fallback only an hour, so a transient provider failure isn't pinned. No CORS check — it
+exposes nothing, and an `<img>` sends no `Origin`.
 
 ## Request ladder and cost
 

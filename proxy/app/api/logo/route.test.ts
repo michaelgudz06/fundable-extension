@@ -6,14 +6,31 @@ async function loadRoute() {
   return import('./route');
 }
 
-const req = (query: string) => new Request(`https://proxy.test/api/logo?${query}`);
+const req = (query: string, init?: RequestInit) =>
+  new Request(`https://proxy.test/api/logo?${query}`, init);
+
+/**
+ * The route's promise: always 200 with an image, served from this origin, so an <img src> never
+ * breaks and the panel never follows us to a third party.
+ */
+function expectRenderableImage(res: Response) {
+  expect(res.status).toBe(200);
+  expect(res.headers.get('content-type')).toMatch(/^image\//);
+  expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(res.headers.get('location')).toBeNull();
+}
 
 /**
  * Decode the served fallback down to its actual pixel. Parsed from the bytes on the wire rather
  * than compared against the route's own constant — the bug this pins is a base64 string that was
  * trusted because it was labelled transparent, and a self-comparison would pass a green pixel too.
  */
-async function fallbackPixel(res: Response) {
+async function expectTransparentFallback(res: Response) {
+  expectRenderableImage(res);
+  expect(res.headers.get('content-type')).toBe('image/png');
+  // An hour, not the week a real logo gets: a transient provider failure must not pin the blank.
+  expect(res.headers.get('cache-control')).toBe('public, max-age=3600');
+
   const png = Buffer.from(await res.arrayBuffer());
   expect([...png.subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -35,39 +52,54 @@ async function fallbackPixel(res: Response) {
   expect(raw).toHaveLength(5); // filter byte + RGBA
   // On a 1x1 image every PNG filter type reduces to the identity: all predictors read
   // out-of-bounds neighbours, which are defined as zero. So the raw bytes are the pixel.
-  const [r, g, b, a] = raw.subarray(1);
-  return { r, g, b, a };
+  expect(raw[4]).toBe(0); // alpha
 }
+
+const truncated = () =>
+  new ReadableStream({
+    start(controller) {
+      controller.enqueue(new Uint8Array([1, 2, 3]));
+      controller.error(new Error('The operation was aborted due to timeout'));
+    },
+  });
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('GET /api/logo', () => {
   it.each([
     ['a malformed domain', 'domain=not a domain'],
+    ['a path-traversal domain', 'domain=..%2Fetc%2Fpasswd'],
     ['a missing domain', ''],
   ])('answers %s with a transparent PNG, without calling the provider', async (_case, query) => {
     const upstream = vi.fn();
     vi.stubGlobal('fetch', upstream);
     const { GET } = await loadRoute();
 
-    const res = await GET(req(query));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('image/png');
-    expect((await fallbackPixel(res)).a).toBe(0);
+    await expectTransparentFallback(await GET(req(query)));
     expect(upstream).not.toHaveBeenCalled();
   });
 
-  it('answers a provider failure with a transparent PNG instead of an error', async () => {
-    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 502 })));
+  // Every one of these would otherwise reach the panel as a broken-image icon.
+  it.each<[string, () => Response]>([
+    ['fails', () => new Response('nope', { status: 502 })],
+    ['answers HTML', () => new Response('<script>x</script>', { headers: { 'content-type': 'text/html' } })],
+    ['sends no content-type', () => new Response(new Uint8Array([1, 2, 3]))],
+    ['sends an empty body', () => new Response(new Uint8Array(), { headers: { 'content-type': 'image/png' } })],
+    ['truncates the body', () => new Response(truncated(), { headers: { 'content-type': 'image/png' } })],
+    [
+      'throws',
+      () => {
+        throw new Error('ECONNREFUSED');
+      },
+    ],
+  ])('answers a transparent PNG when the provider %s', async (_case, upstream) => {
+    vi.stubGlobal('fetch', vi.fn(async () => upstream()));
     const { GET } = await loadRoute();
 
-    const res = await GET(req('domain=wealthsimple.com'));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('image/png');
-    expect((await fallbackPixel(res)).a).toBe(0);
+    await expectTransparentFallback(await GET(req('domain=wealthsimple.com')));
   });
 
-  it('passes the provider image through', async () => {
+  it('passes the provider image through, cached a week', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => new Response('icon-bytes', { headers: { 'content-type': 'image/x-icon' } })),
@@ -75,8 +107,9 @@ describe('GET /api/logo', () => {
     const { GET } = await loadRoute();
 
     const res = await GET(req('domain=https://WWW.wealthsimple.com/invest'));
-    expect(res.status).toBe(200);
+    expectRenderableImage(res);
     expect(res.headers.get('content-type')).toBe('image/x-icon');
+    expect(res.headers.get('cache-control')).toBe('public, max-age=604800, immutable');
     expect(await res.text()).toBe('icon-bytes');
   });
 
@@ -87,43 +120,25 @@ describe('GET /api/logo', () => {
     vi.stubGlobal('fetch', upstream);
     const { GET } = await loadRoute();
 
-    const res = await GET(req('domain=wealthsimple.com'));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('image/png');
-    expect((await fallbackPixel(res)).a).toBe(0);
+    await expectTransparentFallback(await GET(req('domain=wealthsimple.com')));
 
     const [, init] = upstream.mock.calls[0] as unknown as [string, RequestInit];
     expect(init.signal).toBeInstanceOf(AbortSignal);
   });
 
-  it('falls back to the PNG when the provider body fails mid-transfer', async () => {
-    const truncated = new ReadableStream({
-      start(controller) {
-        controller.enqueue(new Uint8Array([1, 2, 3]));
-        controller.error(new Error('The operation was aborted due to timeout'));
-      },
-    });
+  it('serves any Origin — unlike /api/company, there is no CORS check here', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response(truncated, { headers: { 'content-type': 'image/x-icon' } })),
+      vi.fn(async () => new Response('icon-bytes', { headers: { 'content-type': 'image/x-icon' } })),
     );
     const { GET } = await loadRoute();
+    const headers = { origin: 'https://evil.example' };
 
-    const res = await GET(req('domain=wealthsimple.com'));
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('image/png');
-    expect((await fallbackPixel(res)).a).toBe(0);
-  });
+    const hit = await GET(req('domain=wealthsimple.com', { headers }));
+    expectRenderableImage(hit);
+    expect(await hit.text()).toBe('icon-bytes');
+    expect(hit.headers.get('vary')).toBeNull();
 
-  it('does not serve a non-image content-type from the proxy origin', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('<script>x</script>', { headers: { 'content-type': 'text/html' } })),
-    );
-    const { GET } = await loadRoute();
-
-    const res = await GET(req('domain=wealthsimple.com'));
-    expect(res.headers.get('content-type')).toBe('image/png');
-    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    await expectTransparentFallback(await GET(req('domain=not a domain', { headers })));
   });
 });
