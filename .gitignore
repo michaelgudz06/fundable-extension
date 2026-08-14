@@ -1,0 +1,15 @@
+node_modules/
+
+# Extension signing keys — the public half lives in extension/manifest.json,
+# the private half must never be committed. See README.
+*.pem
+*.pkcs8
+
+# Vercel / Next.js (proxy/)
+.next/
+.vercel/
+.env
+.env.*
+!.env.example
+
+.DS_Store
