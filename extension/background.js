@@ -73,21 +73,36 @@ function panelCss() {
 // This matches the url() construct itself rather than the properties that can
 // carry one — background, mask, border-image, cursor, list-style and whatever
 // ships next — because enumerating them is how this class of bug survives.
+// image-set() is the reason the survivor warning below exists: it takes a bare
+// quoted string with no url() token at all, so no amount of url() matching finds
+// it. There will be another construct like it, and the warning is what makes the
+// next one diagnosable instead of silent.
 const URL_TOKEN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
 const IMPORT_RULE = /@import\b[^;]*;?/gi;
+const IMAGE_SET = /(?:-webkit-)?image-set\(([^)]*)\)/gi;
+const REMOTE_STRING = /(['"])\s*https?:[^'"]*\1/gi;
+const REMOTE_LEFTOVER = /https?:\/\/[^\s'")]+/gi;
 
 function sanitizeCss(css) {
   const stripped = [];
+  const drop = (token) => (stripped.push(token.trim()), '');
   const safe = css
-    .replace(IMPORT_RULE, (rule) => (stripped.push(rule.trim()), ''))
-    .replace(URL_TOKEN, (token, _quote, target) => {
-      if (/^data:/i.test(target.trim())) return token;
-      stripped.push(token.trim());
-      return '';
-    });
+    .replace(IMPORT_RULE, drop)
+    .replace(URL_TOKEN, (token, _quote, target) =>
+      /^data:/i.test(target.trim()) ? token : drop(token),
+    )
+    .replace(IMAGE_SET, (construct) => construct.replace(REMOTE_STRING, drop));
+
   if (stripped.length) {
     console.warn(
       `[fundable] stripped page-visible reference(s) from panel.css: ${stripped.join(', ')}`,
+    );
+  }
+  const survivors = safe.match(REMOTE_LEFTOVER);
+  if (survivors) {
+    console.warn(
+      `[fundable] panel.css still references ${survivors.join(', ')} after sanitising; ` +
+        'if the page fetches it, that request shows up in the inspected page\'s Network tab',
     );
   }
   return safe;

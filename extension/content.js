@@ -207,7 +207,14 @@ const send = (message) => chrome.runtime.sendMessage(message).catch(() => null);
 // path here is silent on purpose: a rotated filename, a page that forbids it, a
 // font that won't parse. panel.css keeps its Helvetica/Arial fallback and the
 // card renders either way.
+//
+// mount() runs once per resolving navigation, but the faces belong to the
+// document, so the promise is memoised: FontFaceSet retains every distinct
+// FontFace added to it, and browsing company pages in one tab is the primary use
+// case.
 const FONT_FAMILY = 'PP Mori'; // must match the family panel.css asks for
+
+let fontsReady;
 
 async function registerFonts() {
   const faces = await send({ type: 'fonts' });
@@ -245,7 +252,7 @@ function mount(css) {
 
   root.append(pill, panel);
   document.documentElement.append(host);
-  registerFonts(); // deliberately not awaited: it must never hold up a render
+  fontsReady ??= registerFonts(); // deliberately not awaited: never holds up a render
 
   const show = (...nodes) => panel.replaceChildren(...nodes);
   let seq = 0;
@@ -302,9 +309,13 @@ function mount(css) {
 // clicked through to. The Navigation API sees those same-document navigations;
 // history.pushState cannot be observed from here because a content script runs
 // in an isolated world and the page's router lives in the page world.
-// manifest.json pins minimum_chrome_version to 102 for this.
 //
-// Checking location.href is not a network call: the URL still goes to the worker
+// It has to be `navigatesuccess`, not `navigate`: `navigate` is the interception
+// point and fires BEFORE the URL commits, so location.href there is still the
+// page being left. `navigatesuccess` fires after the commit, and a navigation
+// that is cancelled or fails never fires it at all.
+//
+// Reading location.href is not a network call: the URL still goes to the worker
 // to be resolved, so content.js stays at zero requests.
 let unmount = null;
 let navSeq = 0;
@@ -320,7 +331,7 @@ async function sync() {
 
 function start() {
   sync();
-  globalThis.navigation?.addEventListener('navigate', () => sync());
+  globalThis.navigation?.addEventListener('navigatesuccess', () => sync());
 }
 
 if (typeof chrome === 'object' && chrome.runtime?.id) start();
