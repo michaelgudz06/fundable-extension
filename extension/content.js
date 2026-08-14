@@ -52,9 +52,11 @@ const count = (value) =>
 function when(value) {
   if (!value) return null;
   const date = new Date(value);
+  // The proxy sends date-only strings, which parse as UTC midnight. Formatting
+  // them in the local zone would render 2021-01-01 as "Dec 2020" west of UTC.
   return isNaN(date.getTime())
     ? null
-    : date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    : date.toLocaleDateString('en-US', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 }
 
 // --- DOM helpers ------------------------------------------------------------
@@ -66,7 +68,11 @@ function el(tag, className, text) {
   return node;
 }
 
+// Returns null for anything that isn't http(s) — a `javascript:` or `data:`
+// href from a poisoned card would otherwise become a clickable anchor inside the
+// host page. A dropped link hides its element, like any other missing value.
 function link(className, href, text) {
+  if (!/^https?:\/\//i.test(String(href))) return null;
   const anchor = el('a', className, text);
   anchor.href = href;
   anchor.target = '_blank';
@@ -101,9 +107,7 @@ function header(card) {
 function chips(card) {
   const links = { ...card.links };
   links.website ??= card.website;
-  const nodes = CHIPS.filter(([key]) => links[key]).map(([key, label]) =>
-    link('fx-chip', links[key], label),
-  );
+  const nodes = CHIPS.map(([key, label]) => link('fx-chip', links[key], label)).filter(Boolean);
   if (!nodes.length) return null;
   const row = el('div', 'fx-chips');
   row.append(...nodes);
@@ -156,7 +160,8 @@ function round(card) {
 
   const date = when(deal.date);
   if (date) node.append(el('div', 'fx-round-date', date));
-  if (deal.article_url) node.append(link('fx-round-source', deal.article_url, 'Source'));
+  const source = link('fx-round-source', deal.article_url, 'Source');
+  if (source) node.append(source);
 
   return node.childNodes.length ? node : null;
 }
@@ -285,11 +290,37 @@ function mount(css) {
   }
 
   pill.addEventListener('click', () => (panel.style.display === 'none' ? open() : close()));
+
+  return () => {
+    close(); // drops the document-level keydown/click listeners too
+    host.remove();
+  };
 }
 
-async function start() {
+// LinkedIn and Crunchbase route in the page without reloading, so the content
+// script runs once and the pill would never appear on the company page you
+// clicked through to. The Navigation API sees those same-document navigations;
+// history.pushState cannot be observed from here because a content script runs
+// in an isolated world and the page's router lives in the page world.
+// manifest.json pins minimum_chrome_version to 102 for this.
+//
+// Checking location.href is not a network call: the URL still goes to the worker
+// to be resolved, so content.js stays at zero requests.
+let unmount = null;
+let navSeq = 0;
+
+async function sync() {
+  const me = ++navSeq;
+  unmount?.();
+  unmount = null;
   const res = await send({ type: 'init', url: location.href });
-  if (res?.identifier) mount(res.css);
+  if (me !== navSeq) return; // a later navigation already owns the pill
+  if (res?.identifier) unmount = mount(res.css);
+}
+
+function start() {
+  sync();
+  globalThis.navigation?.addEventListener('navigate', () => sync());
 }
 
 if (typeof chrome === 'object' && chrome.runtime?.id) start();
