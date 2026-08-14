@@ -163,17 +163,20 @@
   background: var(--fx-surface);
   border: 2px solid var(--fx-ring);
   object-fit: contain;
-  overflow: hidden;
 }
+
+/* Wraps rather than ellipsises: the header grid is built for two text rows and
+   a truncated company name is not acceptable. `min-width: 0` drops the grid
+   item's automatic minimum so a long token cannot widen the track past 340px;
+   `break-word` then breaks that token instead of overflowing. */
 
 .fx-name {
   font-size: 17px;
   font-weight: 600;
   line-height: 1.25;
   color: var(--fx-ink);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 .fx-meta {
@@ -297,7 +300,6 @@
   background: var(--fx-surface);
   border: 1px solid var(--fx-ring);
   object-fit: contain;
-  overflow: hidden;
 }
 
 .fx-investor-name {
