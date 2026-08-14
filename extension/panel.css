@@ -24,7 +24,6 @@
   src: url('https://www.tryfundable.ai/_next/static/media/cb07cb684de218c2-s.p.otf') format('opentype');
 }
 
-:host,
 .fx-panel,
 .fx-pill {
   --fx-ink: #000;
@@ -35,6 +34,15 @@
   --fx-line: #E5E7EB;
   --fx-ring: #F4F6F8;
   --fx-green: #00A76F;
+
+  /* The two `-text` tokens darken the spec sheet's brand hexes purely to clear
+     WCAG AA on text. Lead badge label #00A76F -> #007850 (4.74:1 on the
+     composited tint, was 2.67:1); the tint itself keeps #00A76F so the badge
+     still reads as Fundable green. Error copy #FF5630 -> #C74325 (4.93:1 on
+     white, was 3.17:1). `--fx-red: #FF5630` was dropped outright rather than
+     left orphaned — .fx-error's text was its only consumer — so #FF5630 is
+     deliberately absent from this file. */
+
   --fx-green-text: #007850;
   --fx-red-text: #C74325;
 }
@@ -163,6 +171,9 @@
   font-weight: 600;
   line-height: 1.25;
   color: var(--fx-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fx-meta {
@@ -249,6 +260,12 @@
   line-height: 1.2;
   color: var(--fx-ink);
 }
+
+/* Live renders card links as plain text; the ink rest state is a deliberate
+   departure. A source link pixel-identical to the date beside it is a feature
+   nobody will ever click, and every other link here already carries a rest
+   affordance (.fx-chip its fill, .fx-footer its ink), so this reuses an
+   established pattern rather than inventing one. */
 
 .fx-round-source {
   color: var(--fx-ink);
