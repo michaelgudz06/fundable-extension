@@ -239,13 +239,21 @@ denies('hash-routed auth screens', [
   'https://acme.com/#/oauth/authorize?client_id=abc',
 ]);
 
+// An anchor is a place on the page, not a route — including when it is named
+// after an auth word, which is ordinary on a marketing page.
 resolves('ordinary anchors are not routes', 'domain', [
   ['https://acme.com/#pricing', 'acme.com'],
   ['https://acme.com/about#our-team', 'acme.com'],
+  ['https://stripe.com/pricing#signup', 'stripe.com'],
+  ['https://acme.com/pricing#billing', 'acme.com'],
+  ['https://acme.com/about#connect', 'acme.com'],
+  ['https://acme.com/product#dashboard', 'acme.com'],
+  ['https://acme.com/#login', 'acme.com'],
 ]);
 
 resolves('a linkedin company page keeps its anchor', 'linkedin', [
   ['https://www.linkedin.com/company/stripe#about', 'https://www.linkedin.com/company/stripe'],
+  ['https://www.linkedin.com/company/stripe#profile', 'https://www.linkedin.com/company/stripe'],
 ]);
 
 // Whole host labels and whole path segments only, after `-`/`_` are stripped —

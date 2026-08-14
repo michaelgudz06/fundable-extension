@@ -90,7 +90,8 @@ const DENY_TLDS = new Set([
 // govt.nz, nhs.uk, mil.br.
 const DENY_SUFFIX_LABELS = new Set(['gov', 'gob', 'gouv', 'govt', 'mil', 'nhs', 'police']);
 
-// Auth surfaces. Matched against a whole host label or a whole path segment,
+// Auth surfaces. Matched against a whole host label, a whole path segment or a
+// whole hash-route segment ("#/login"), never against a plain anchor ("#login"),
 // with `-` and `_` stripped first, so one entry covers sign-in / sign_in / signin
 // but a compound segment does not match: /blog/oauth-explained is "oauthexplained",
 // so it resolves normally, while /login and /sign_in deny.
@@ -189,10 +190,12 @@ export function resolveIdentifier(url) {
 
   const labels = host.split('.');
   const segments = u.pathname.split('/').filter(Boolean).map((s) => s.toLowerCase());
-  // Hash routes: "#/login", "#!/login", "#/oauth/authorize?client_id=..." are
-  // paths, not anchors, and "#access_token=..." is a parameter list.
+  // Only "#/..." and "#!/..." are routes; "#pricing" is an anchor and "#access_
+  // token=..." is a parameter list.
   const [hashPath, hashQuery] = u.hash.slice(1).split('?');
-  const routes = hashPath.replace(/^!/, '').split('/').filter(Boolean);
+  const routes = /^!?\//.test(hashPath)
+    ? hashPath.replace(/^!/, '').split('/').filter(Boolean)
+    : [];
 
   const word = (s) => s.toLowerCase().replace(/[-_]/g, '');
   if ([...segments, ...routes].some((s) => AUTH_WORDS.has(word(s)))) return null;
