@@ -317,14 +317,23 @@ function mount(css) {
 //
 // Reading location.href is not a network call: the URL still goes to the worker
 // to be resolved, so content.js stays at zero requests.
+//
+// `navigatesuccess` also fires for a replaceState that only adds a tracking
+// param, for scroll restoration, and for a hash change. None of those is a new
+// company, and tearing the host down would take the card the reader is looking
+// at with it, so an unchanged URL does nothing at all.
 let unmount = null;
 let navSeq = 0;
+let syncedHref = null;
 
 async function sync() {
+  const href = location.href;
+  if (href === syncedHref) return;
+  syncedHref = href;
   const me = ++navSeq;
   unmount?.();
   unmount = null;
-  const res = await send({ type: 'init', url: location.href });
+  const res = await send({ type: 'init', url: href });
   if (me !== navSeq) return; // a later navigation already owns the pill
   if (res?.identifier) unmount = mount(res.css);
 }
