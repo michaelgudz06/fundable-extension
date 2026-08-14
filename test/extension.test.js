@@ -21,12 +21,15 @@ globalThis.chrome = {
 };
 globalThis.fetch = async (url, options) => route(url, options);
 
-// Every reference a stylesheet makes, read with the worker's own extractor
-// rather than a second copy of it: hand-copied regexes drifted into the
-// identical blind spot twice. A stylesheet is a declarative artifact this repo
-// owns, and the schemes of its references are the contract — anything but data:
-// is a request the host page issues on our behalf.
-const { cssReferences: urlTargets, sanitizeCss } = await import('../extension/background.js');
+// Every reference a stylesheet makes, read with the worker's own extractor and
+// judged by its own rule rather than a second copy of either: hand-copied
+// regexes drifted into the identical blind spot twice. A stylesheet is a
+// declarative artifact this repo owns, and what its references point at is the
+// contract — anything the page would have to fetch is a request it issues on our
+// behalf.
+const { cssReferences: urlTargets, sanitizeCss, FETCHES_NOTHING } = await import(
+  '../extension/background.js'
+);
 
 // ---------------------------------------------------------------------------
 // The one hard requirement: content.js never talks to the network.
@@ -68,7 +71,7 @@ test('content.js makes no page-visible network calls', () => {
 // lands, its url() references have to obey the same rule content.js does.
 test('panel.css references nothing the page would have to fetch', { skip: !existsSync(path('panel.css')) }, () => {
   for (const target of urlTargets(read('panel.css'))) {
-    assert.match(target, /^data:/i, `panel.css points at ${target}; the page would fetch it`);
+    assert.match(target, FETCHES_NOTHING, `panel.css points at ${target}; the page would fetch it`);
   }
 });
 
@@ -120,42 +123,78 @@ const SVG_URI =
   "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...";
 const SVG_RULE = `.fx-icon{background-image:url("${SVG_URI}")}`;
 
-// The rule is about the CONSTRUCT carrying a reference, never the property or
-// the function it sits in — enumerating carriers is how this class of bug kept
-// coming back a round at a time. The invented function is the row that proves
-// it: nothing in the sanitizer has ever heard of paint-thing().
-//
-// The data: payloads differ per row because CSS does: an unquoted url() token
-// cannot hold raw quotes or spaces, and a single-quoted string cannot hold the
-// inline SVG's single-quoted attributes.
+// What survives is decided by what the reference points at, not by the construct
+// carrying it and not by a list of dangerous schemes — enumerating either is how
+// this class of bug kept coming back a round at a time. The invented function is
+// the row that proves the carrier does not matter: nothing in the sanitizer has
+// ever heard of paint-thing(). The relative and protocol-relative rows are the
+// ones a scheme blocklist misses: both are page-visible requests, the first
+// against LinkedIn's own origin.
 const PNG_URI = 'data:image/png;base64,AAA';
-const CARRIERS = [
-  ['url("…")', (ref) => `.a{background:url("${ref}")}`, [PNG_URI, SVG_URI]],
-  ["url('…')", (ref) => `.b{background:url('${ref}')}`, [PNG_URI]],
-  ['url(…)', (ref) => `.c{background:url(${ref})}`, [PNG_URI]],
-  ['image-set()', (ref) => `.d{background-image:image-set("${ref}" 1x)}`, [PNG_URI, SVG_URI]],
-  ['paint-thing()', (ref) => `.e{background:paint-thing("${ref}" cover)}`, [PNG_URI, SVG_URI]],
-  ['a bare quoted string', (ref) => `.f{--fx-art:"${ref}"}`, [PNG_URI, SVG_URI]],
+const INERT = [PNG_URI, SVG_URI, '#blur'];
+const FETCHED = [
+  'https://cdn.example.com/logo.png',
+  'http://cdn.example.com/logo.png',
+  '//cdn.example.com/x.png',
+  'icon.png',
 ];
 
-test('a data: reference survives whatever carries it, and a remote one never does', () => {
+// Each carrier lists what it can legally express: an unquoted url() token cannot
+// hold raw quotes or spaces, a single-quoted string cannot hold the inline SVG's
+// single-quoted attributes, and a bare quoted string with no scheme cannot be
+// told from prose, so those rows carry no relative path or fragment.
+const ALL = [...INERT, ...FETCHED];
+const URL_SAFE = ALL.filter((ref) => ref !== SVG_URI);
+const SCHEMED = [PNG_URI, SVG_URI, ...FETCHED.filter((ref) => ref !== 'icon.png')];
+const CARRIERS = [
+  ['url("…")', (ref) => `.a{background:url("${ref}")}`, ALL],
+  ["url('…')", (ref) => `.b{background:url('${ref}')}`, URL_SAFE],
+  ['url(…)', (ref) => `.c{background:url(${ref})}`, URL_SAFE],
+  ['image-set()', (ref) => `.d{background-image:image-set("${ref}" 1x)}`, SCHEMED],
+  ['paint-thing()', (ref) => `.e{background:paint-thing("${ref}" cover)}`, SCHEMED],
+  ['a bare quoted string', (ref) => `.f{--fx-art:"${ref}"}`, SCHEMED],
+  ['a rule below a comment', (ref) => `/* see https://wiki.example.com/panel */\n.g{background:url("${ref}")}`, ALL],
+];
+
+// A comment is never fetched by anything, so every reference inside one is left
+// alone whatever it points at — including the shapes every row above strips.
+const COMMENTS = [
+  ['a commented-out rule', (ref) => `/* .h{background:url("${ref}")} */\n.i{color:red}`, ALL],
+  ['a commented-out @import', (ref) => `/* @import "${ref}"; */\n.i{color:red}`, ALL],
+  ['a note in a comment', (ref) => `/* icons from ${ref} */\n.i{color:red}`, ALL],
+];
+
+test('what the page would fetch is stripped and named; what it would not is kept whole', () => {
+  const warnings = [];
   const realWarn = console.warn;
-  console.warn = () => {};
+  console.warn = (message) => warnings.push(message);
   try {
-    for (const [carrier, rule, dataUris] of CARRIERS) {
-      for (const remote of ['https://cdn.example.com/logo.png', 'http://cdn.example.com/logo.png']) {
-        const css = rule(remote);
-        assert.deepEqual(urlTargets(css), [remote], `${carrier} hides ${remote} from the extractor`);
-        assert.doesNotMatch(
-          sanitizeCss(css),
-          /cdn\.example\.com/,
-          `${carrier} leaks ${remote}; the page would fetch it`,
+    for (const [carrier, rule, refs] of [...CARRIERS, ...COMMENTS]) {
+      const commented = COMMENTS.some(([name]) => name === carrier);
+      for (const ref of refs) {
+        const css = rule(ref);
+        warnings.length = 0;
+        const safe = sanitizeCss(css);
+
+        if (commented || INERT.includes(ref)) {
+          assert.equal(safe, css, `${carrier} must keep ${ref} byte for byte`);
+          assert.deepEqual(warnings, [], `${carrier} warns about ${ref}, which fetches nothing`);
+        } else {
+          assert.ok(!safe.includes(ref), `${carrier} leaks ${ref}; the page would fetch it`);
+          assert.ok(
+            warnings.join('\n').includes(ref),
+            `${carrier} strips ${ref} without saying so; a silent strip is a mystery`,
+          );
+          assert.ok(
+            !warnings.join('\n').includes('wiki.example.com'),
+            `${carrier} cries wolf over a URL in a comment, which nothing fetches`,
+          );
+        }
+        assert.deepEqual(
+          urlTargets(css),
+          commented ? [] : [ref],
+          `${carrier} misreads ${ref}; the panel.css guard reads it the same way`,
         );
-      }
-      for (const uri of dataUris) {
-        const css = rule(uri);
-        assert.deepEqual(urlTargets(css), [uri], `${carrier} misreads its data: payload`);
-        assert.equal(sanitizeCss(css), css, `${carrier} must keep a data: URI byte for byte`);
       }
     }
   } finally {
@@ -174,6 +213,9 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
     return {
       text: async () =>
         '@import "https://cdn.example.com/reset.css";\n' +
+        // The same rule one keystroke from live, which is how a stylesheet under
+        // review actually looks. A comment fetches nothing.
+        '/* @import "https://commented.example.com/legacy.css"; */\n' +
         '.fx-panel{background:url("https://cdn.example.com/bg.png")}\n' +
         '.fx-logo{mask:url(/local/icon.svg)}\n' +
         // This one hides its remote source behind an earlier argument that closes
@@ -197,12 +239,14 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
 
   assert.ok('identifier' in res, 'init must report the resolver verdict');
   assert.deepEqual(urlTargets(res.css), [PNG_URI, SVG_URI]);
-  assert.doesNotMatch(res.css, /@import/, 'a bare @import fetches too');
+  assert.ok(!res.css.includes('reset.css'), 'a bare @import fetches too');
   assert.doesNotMatch(res.css, /cdn\.example\.com/, 'image-set carries a bare string, not a url()');
   assert.match(res.css, /\.fx-logo\{mask:/, 'only the references are stripped, not the rules');
   assert.ok(res.css.includes(SVG_RULE), 'a data: URI has to survive byte for byte, namespace and all');
+  assert.match(res.css, /commented\.example\.com/, 'a commented-out rule is not a reference');
 
   assert.match(warnings.join('\n'), /https:\/\/cdn\.example\.com\/bg\.png/, 'a silent strip is a mystery');
+  assert.doesNotMatch(warnings.join('\n'), /commented\.example\.com/, 'nothing fetches a comment');
   // The survivor warning is the durable half: the next construct nobody
   // anticipated stays diagnosable instead of leaking quietly.
   assert.match(warnings.join('\n'), /survivor\.example\.com/);

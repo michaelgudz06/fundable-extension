@@ -73,46 +73,51 @@ function panelCss() {
 
 // A stylesheet injected into the panel's shadow root is still a page stylesheet:
 // the page fetches whatever it references, and that request lands in the
-// inspected page's Network tab. Only a data: URI loads nothing. panel.css
-// belongs to another crewmate, so the rule is enforced here, at the boundary
-// where the stylesheet enters the extension.
+// inspected page's Network tab. panel.css belongs to another crewmate, so the
+// rule is enforced here, at the boundary where the stylesheet enters the
+// extension.
 //
-// One pattern covers both shapes a reference can take: the url() construct, and
-// a bare quoted string, which is how image-set() — and whatever ships next —
-// carries one with no url() token at all. Matching the constructs rather than
-// the properties that can hold them (background, mask, border-image, cursor,
-// list-style, …) is the point: enumerating properties is how this class of bug
-// survives.
+// One pattern covers every shape a reference can hide in, because enumerating
+// the properties that can carry one (background, mask, border-image, cursor,
+// list-style, …) is how this class of bug survives. In order: a comment, matched
+// only so it is consumed, since nothing inside one is ever fetched; an @import,
+// which always is; the url() construct; and a bare quoted URL, which is how
+// image-set() — and whatever ships next — carries a reference with no url()
+// token at all. Every branch runs to its own closing quote, so a data: URI is
+// consumed whole wherever it sits and the quotes inside it — an inline SVG
+// carries xmlns='http://www.w3.org/2000/svg' — are never read as references of
+// their own.
 //
-// Every branch runs to its own closing quote, so a data: URI is consumed whole
-// wherever it sits and the quotes inside it — an inline SVG carries
-// xmlns='http://www.w3.org/2000/svg' — are never mistaken for references of
-// their own. data: is the only scheme panel.css is allowed, so corrupting one
-// would be worse than the leak this guards against.
-//
-// Nothing catches every future construct, so the survivor warning below is the
-// backstop that keeps the next one diagnosable instead of silent. A content:
-// string that happens to be a remote URL is stripped along with the real
-// references; that is the price of not enumerating.
+// What survives is an allowlist rather than a list of dangerous schemes: a data:
+// URI carries its own bytes, and a bare #fragment names a node in the tree it is
+// already in. Everything else is a request — a relative icon.png resolves
+// against the HOST page, //cdn is whatever scheme the page loaded under — so it
+// is stripped and named in a warning, and the survivor warning below stays as
+// the backstop for a construct this pattern does not know. A quoted string with
+// no scheme is the one shape left unclassified: nothing can tell it from a
+// content: string without parsing the CSS.
 //
 // test/extension.test.js checks panel.css through these same exports rather than
 // its own copy: the two drifted into the identical blind spot twice.
-export const CSS_REFERENCE =
-  /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s]*))\s*\)|"((?:https?|data):[^"]*)"|'((?:https?|data):[^']*)'/gi;
+const CSS_REFERENCE =
+  /\/\*[\s\S]*?\*\/|(@import\b[^;]*;?)|url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s]*))\s*\)|"((?:[a-z][a-z0-9+.-]*:[^\s"]|\/\/)[^"]*)"|'((?:[a-z][a-z0-9+.-]*:[^\s']|\/\/)[^']*)'/gi;
 
-const target = (m) => (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5]).trim();
+const target = (m) => (m[1] ?? m[2] ?? m[3] ?? m[4] ?? m[5] ?? m[6])?.trim();
 
-export const cssReferences = (css) => [...css.matchAll(CSS_REFERENCE)].map(target);
+export const FETCHES_NOTHING = /^(?:data:|#)/i;
 
-const IMPORT_RULE = /@import\b[^;]*;?/gi;
+export const cssReferences = (css) =>
+  [...css.matchAll(CSS_REFERENCE)].map(target).filter((ref) => ref !== undefined);
+
 const REMOTE_LEFTOVER = /https?:\/\/[^\s'")]+/gi;
 
 export function sanitizeCss(css) {
   const stripped = [];
   const drop = (token) => (stripped.push(token.trim()), '');
-  const safe = css
-    .replace(IMPORT_RULE, drop)
-    .replace(CSS_REFERENCE, (...m) => (/^data:/i.test(target(m)) ? m[0] : drop(m[0])));
+  const safe = css.replace(CSS_REFERENCE, (...m) => {
+    const ref = target(m);
+    return ref === undefined || FETCHES_NOTHING.test(ref) ? m[0] : drop(m[0]);
+  });
 
   if (stripped.length) {
     console.warn(
