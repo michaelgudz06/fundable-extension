@@ -250,8 +250,11 @@
   color: var(--fx-ink);
 }
 
-.fx-round-source:hover {
+.fx-round-source {
   color: var(--fx-ink);
+}
+
+.fx-round-source:hover {
   text-decoration: underline;
 }
 
