@@ -28,9 +28,9 @@ Logos are the easy place to leak one. `background.js` fetches `/api/logo?domain=
 and hands the panel a `data:` URL, because a bare `<img src="https://…">` in the panel
 would be a page-visible request.
 
-`test/extension.test.js` fails the build if `content.js` ever grows a `fetch`,
-`XMLHttpRequest`, `sendBeacon`, `EventSource`, or a remote `src`. If that test goes red,
-move the call into the worker — don't loosen the test.
+`test/extension.test.js` fails the build if `content.js` ever grows one — `fetch`,
+`XMLHttpRequest`, a remote `src`, a remote CSS `url()`, and the rest of the `FORBIDDEN`
+list there. If that test goes red, move the call into the worker — don't loosen the test.
 
 The API key itself never reaches the extension: it lives in Vercel env vars, and the
 proxy returns only trimmed card JSON.
@@ -40,15 +40,15 @@ proxy returns only trimmed card JSON.
 `content.js` sends messages; `background.js` answers.
 
 ```js
-// on panel open — the URL is re-resolved every time because LinkedIn and
-// Crunchbase are SPAs and may have navigated since the script ran
+// on load, after every same-document navigation, and again on panel open —
+// LinkedIn and Crunchbase are SPAs, so the URL is re-resolved every time
 { type: 'init', url }        -> { identifier: {kind, value} | null, css }
 
 { type: 'lookup', identifier } -> { found: true, card }
                                 | { found: false }
                                 | { error: 'rate_limited' | 'unavailable' | 'network' }
 
-// once per mounted page — see "PP Mori" below
+// once per document, however many times the pill is rebuilt — see "PP Mori" below
 { type: 'fonts' }            -> [{ weight, base64 }, …]
 ```
 
