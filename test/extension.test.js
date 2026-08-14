@@ -26,7 +26,7 @@ globalThis.fetch = async (url, options) => route(url, options);
 // identical blind spot twice. A stylesheet is a declarative artifact this repo
 // owns, and the schemes of its references are the contract — anything but data:
 // is a request the host page issues on our behalf.
-const { cssReferences: urlTargets } = await import('../extension/background.js');
+const { cssReferences: urlTargets, sanitizeCss } = await import('../extension/background.js');
 
 // ---------------------------------------------------------------------------
 // The one hard requirement: content.js never talks to the network.
@@ -116,18 +116,51 @@ const ask = (message) =>
 // An inline SVG is the shape panel.css is most likely to reach for, since data:
 // is the only scheme it is allowed — and it carries a quoted http(s) namespace
 // that loads nothing. Eating it would blank the icon silently.
-const SVG_RULE =
-  '.fx-icon{background-image:url("data:image/svg+xml,%3csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 16 16\'%3e...")}';
+const SVG_URI =
+  "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...";
+const SVG_RULE = `.fx-icon{background-image:url("${SVG_URI}")}`;
 
-test('a data: reference is read whole, so the quotes inside it are not references', () => {
-  const targets = urlTargets(`${SVG_RULE}\n.fx-logo{background-image:image-set("https://cdn.example.com/logo.png" 1x)}`);
-  assert.deepEqual(targets, [
-    "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...",
-    'https://cdn.example.com/logo.png',
-  ]);
-  // Which is what the panel.css guard above asserts on: one legal data: target,
-  // and the remote one still caught.
-  assert.equal(targets.filter((t) => !/^data:/i.test(t)).length, 1);
+// The rule is about the CONSTRUCT carrying a reference, never the property or
+// the function it sits in — enumerating carriers is how this class of bug kept
+// coming back a round at a time. The invented function is the row that proves
+// it: nothing in the sanitizer has ever heard of paint-thing().
+//
+// The data: payloads differ per row because CSS does: an unquoted url() token
+// cannot hold raw quotes or spaces, and a single-quoted string cannot hold the
+// inline SVG's single-quoted attributes.
+const PNG_URI = 'data:image/png;base64,AAA';
+const CARRIERS = [
+  ['url("…")', (ref) => `.a{background:url("${ref}")}`, [PNG_URI, SVG_URI]],
+  ["url('…')", (ref) => `.b{background:url('${ref}')}`, [PNG_URI]],
+  ['url(…)', (ref) => `.c{background:url(${ref})}`, [PNG_URI]],
+  ['image-set()', (ref) => `.d{background-image:image-set("${ref}" 1x)}`, [PNG_URI, SVG_URI]],
+  ['paint-thing()', (ref) => `.e{background:paint-thing("${ref}" cover)}`, [PNG_URI, SVG_URI]],
+  ['a bare quoted string', (ref) => `.f{--fx-art:"${ref}"}`, [PNG_URI, SVG_URI]],
+];
+
+test('a data: reference survives whatever carries it, and a remote one never does', () => {
+  const realWarn = console.warn;
+  console.warn = () => {};
+  try {
+    for (const [carrier, rule, dataUris] of CARRIERS) {
+      for (const remote of ['https://cdn.example.com/logo.png', 'http://cdn.example.com/logo.png']) {
+        const css = rule(remote);
+        assert.deepEqual(urlTargets(css), [remote], `${carrier} hides ${remote} from the extractor`);
+        assert.doesNotMatch(
+          sanitizeCss(css),
+          /cdn\.example\.com/,
+          `${carrier} leaks ${remote}; the page would fetch it`,
+        );
+      }
+      for (const uri of dataUris) {
+        const css = rule(uri);
+        assert.deepEqual(urlTargets(css), [uri], `${carrier} misreads its data: payload`);
+        assert.equal(sanitizeCss(css), css, `${carrier} must keep a data: URI byte for byte`);
+      }
+    }
+  } finally {
+    console.warn = realWarn;
+  }
 });
 
 // The stylesheet is injected into the panel's shadow root, which is still page
@@ -143,13 +176,9 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
         '@import "https://cdn.example.com/reset.css";\n' +
         '.fx-panel{background:url("https://cdn.example.com/bg.png")}\n' +
         '.fx-logo{mask:url(/local/icon.svg)}\n' +
-        '.fx-chip{background-image:-webkit-image-set("https://cdn.example.com/chip.png" 1x)}\n' +
-        // Both of these hide the remote source behind an earlier argument that
-        // closes a paren of its own, which is why the strip cannot be scoped to
-        // the image-set() construct.
+        // This one hides its remote source behind an earlier argument that closes
+        // a paren of its own, which is why the strip is scoped to no construct.
         '.fx-tile{background-image:image-set(url("data:image/png;base64,AAA") 1x, "https://cdn.example.com/x@2x.png" 2x)}\n' +
-        '.fx-round{background-image:image-set(linear-gradient(red, blue) 1x, "https://cdn.example.com/y@2x.png" 2x)}\n' +
-        '.fx-pill{background:url("data:image/gif;base64,R0lGOD")}\n' +
         `${SVG_RULE}\n` +
         // Unquoted and outside url(): nothing here understands it, which is the
         // whole reason the survivor warning exists.
@@ -167,14 +196,10 @@ test('init hands back the resolver verdict and a stylesheet the page cannot fetc
   }
 
   assert.ok('identifier' in res, 'init must report the resolver verdict');
-  assert.deepEqual(urlTargets(res.css), [
-    'data:image/png;base64,AAA',
-    'data:image/gif;base64,R0lGOD',
-    "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...",
-  ]);
+  assert.deepEqual(urlTargets(res.css), [PNG_URI, SVG_URI]);
   assert.doesNotMatch(res.css, /@import/, 'a bare @import fetches too');
   assert.doesNotMatch(res.css, /cdn\.example\.com/, 'image-set carries a bare string, not a url()');
-  assert.match(res.css, /\.fx-pill\{background:/, 'only the references are stripped, not the rules');
+  assert.match(res.css, /\.fx-logo\{mask:/, 'only the references are stripped, not the rules');
   assert.ok(res.css.includes(SVG_RULE), 'a data: URI has to survive byte for byte, namespace and all');
 
   assert.match(warnings.join('\n'), /https:\/\/cdn\.example\.com\/bg\.png/, 'a silent strip is a mystery');
@@ -666,11 +691,25 @@ test('the pill follows same-document navigation without ever doubling up', async
   }
 });
 
-// navigatesuccess fires for every same-document navigation, including the ones
-// that go nowhere: a replaceState adding a tracking param, scroll restoration, a
-// hash change. Rebuilding on those destroys the card the reader is mid-way
-// through — the goal was never to show a stale card for a NEW company.
-test('a navigation that does not change the URL leaves the open card alone', async () => {
+// navigatesuccess fires for every same-document navigation, and most of them are
+// not a new company: a replaceState adding a tracking param, scroll restoration,
+// a hash change, LinkedIn's in-page tabs. Rebuilding on those destroys the card
+// the reader is mid-way through, so the resolved identifier decides — an href
+// compare cannot express "same company", which is why this kept coming back.
+//
+// The two guards do different jobs and both have to hold: the href skips the
+// round trip for a navigation that did not move, and it names the URL in flight
+// so arriving back at it is not swallowed; the identifier skips the rebuild for
+// a URL that moved but stayed on the same company.
+const SAME_COMPANY = [
+  // [what moved, href, init round trips it should cost]
+  ['nothing at all', 'https://www.linkedin.com/company/stripe', 0],
+  ['an in-page tab', 'https://www.linkedin.com/company/stripe/about/', 1],
+  ['a tracking param', 'https://www.linkedin.com/company/stripe?trk=nav', 1],
+  ['a fragment', 'https://www.linkedin.com/company/stripe#people', 1],
+];
+
+test('the pill is rebuilt if and only if the resolved company changed', async () => {
   const listeners = {};
   globalThis.navigation = {
     addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
@@ -678,17 +717,24 @@ test('a navigation that does not change the URL leaves the open card alone', asy
   globalThis.location = { href: 'https://www.linkedin.com/company/stripe' };
 
   let inits = 0;
+  let reachable = true;
+  let gate = null;
+  // Stands in for the resolver: every /company/<slug> path is one company,
+  // whatever tab, query or fragment hangs off it.
   chrome.runtime.sendMessage = async (message) => {
-    if (message.type === 'init') {
-      inits++;
-      return { identifier: { kind: 'linkedin', value: message.url }, css: '' };
-    }
     if (message.type === 'lookup') return { found: true, card: { name: 'Stripe' } };
-    return null;
+    if (message.type !== 'init') return null;
+    inits++;
+    await gate;
+    if (!reachable) throw new Error('Extension context invalidated');
+    const slug = new URL(message.url).pathname.match(/^\/company\/([^/]+)/)?.[1];
+    return { identifier: slug ? { kind: 'linkedin', value: slug } : null, css: '' };
   };
 
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  const arrive = async () => {
+  const host = () => document.querySelector('#fundable-extension-root');
+  const arrive = async (href = location.href) => {
+    location.href = href;
     for (const fn of listeners.navigatesuccess ?? []) fn({});
     await settle();
   };
@@ -696,68 +742,56 @@ test('a navigation that does not change the URL leaves the open card alone', asy
   try {
     panel.start();
     await settle();
-    const host = document.querySelector('#fundable-extension-root');
-    assert.ok(host, 'the pill mounts on a company page');
+    const mounted = host();
+    assert.ok(mounted, 'the pill mounts on a company page');
 
-    host.shadowRoot.querySelector('.fx-pill').click();
+    mounted.shadowRoot.querySelector('.fx-pill').click();
     await settle();
-    const card = host.shadowRoot.querySelector('.fx-panel');
+    const card = mounted.shadowRoot.querySelector('.fx-panel');
     assert.equal(card.style.display, '', 'the reader has the panel open');
     assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
 
-    const settled = inits;
-    await arrive();
-    await arrive();
-    assert.equal(document.querySelector('#fundable-extension-root'), host, 'the host must not be rebuilt');
-    assert.equal(card.style.display, '', 'the card the reader is looking at must survive');
-    assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
-    assert.equal(inits, settled, 'an unchanged URL is not a new company; do not re-resolve it');
+    for (const [what, href, cost] of SAME_COMPANY) {
+      const before = inits;
+      await arrive(href);
+      assert.equal(host(), mounted, `${what} changed, not the company; the pill must not be rebuilt`);
+      assert.equal(card.style.display, '', `${what} changed; the open card must survive`);
+      assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
+      assert.equal(inits - before, cost, `${what} changed; wrong number of init round trips`);
+    }
 
-    location.href = 'https://www.linkedin.com/company/ramp';
-    await arrive();
-    assert.equal(inits, settled + 1, 'a real URL change still re-resolves');
-    const next = document.querySelector('#fundable-extension-root');
-    assert.notEqual(next, host, 'a real URL change rebuilds the pill');
+    await arrive('https://www.linkedin.com/company/ramp');
+    assert.notEqual(host(), null, 'a different company still mounts a pill');
+    assert.notEqual(host(), mounted, 'a different company rebuilds the pill');
     assert.equal(document.querySelectorAll('#fundable-extension-root').length, 1);
-  } finally {
-    delete globalThis.navigation;
-    delete globalThis.location;
-    for (const node of document.querySelectorAll('#fundable-extension-root')) node.remove();
-  }
-});
 
-// The same-URL guard must not swallow the retry: a worker that never answered —
-// restarting, or the context invalidated by an extension reload — leaves no pill
-// and no record, so the next navigation tries again. A deny-listed page is
-// different: the worker did answer, so it stays quiet.
-test('a URL the worker never answered for is retried, not recorded as synced', async () => {
-  const listeners = {};
-  globalThis.navigation = {
-    addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
-  };
-  globalThis.location = { href: 'https://www.crunchbase.com/organization/stripe' };
+    await arrive('https://www.linkedin.com/feed/');
+    assert.equal(host(), null, 'a page that resolves to nothing unmounts the pill, not just hides it');
 
-  let answer = null;
-  chrome.runtime.sendMessage = async (message) => {
-    if (message.type !== 'init') return null;
-    if (!answer) throw new Error('Extension context invalidated');
-    return answer;
-  };
+    // A worker that never answered — restarting, or the context invalidated by
+    // an extension reload — must leave no record, so the next navigation retries.
+    // A deny-listed page is different: it answered, so it stays quiet.
+    reachable = false;
+    await arrive('https://www.linkedin.com/company/stripe');
+    assert.equal(host(), null, 'a transport failure has nothing to mount');
 
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+    reachable = true;
+    await arrive();
+    const kept = host();
+    assert.ok(kept, 'the same URL must be re-resolved after a transport failure');
 
-  try {
-    panel.start();
+    // Back to the mounted company while the init for the page just left is still
+    // in flight — one runtime round trip wide, which is real against a cold
+    // worker. The answer that lands names a URL the reader is no longer on, and
+    // the guard has to have recorded the URL in flight or it swallows the return.
+    let release;
+    gate = new Promise((resolve) => (release = resolve));
+    await arrive('https://www.linkedin.com/feed/');
+    await arrive('https://www.linkedin.com/company/stripe');
+    release();
+    gate = null;
     await settle();
-    assert.equal(document.querySelector('#fundable-extension-root'), null, 'nothing to mount yet');
-
-    answer = { identifier: { kind: 'crunchbase', value: location.href }, css: '' };
-    for (const fn of listeners.navigatesuccess) fn({});
-    await settle();
-    assert.ok(
-      document.querySelector('#fundable-extension-root'),
-      'the same URL must be re-resolved after a transport failure',
-    );
+    assert.equal(host(), kept, 'coming back mid-flight must not take the pill with it');
   } finally {
     delete globalThis.navigation;
     delete globalThis.location;

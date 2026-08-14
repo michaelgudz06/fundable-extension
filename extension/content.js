@@ -318,24 +318,36 @@ function mount(css) {
 // Reading location.href is not a network call: the URL still goes to the worker
 // to be resolved, so content.js stays at zero requests.
 //
-// `navigatesuccess` also fires for a replaceState that only adds a tracking
-// param, for scroll restoration, and for a hash change. None of those is a new
-// company, and tearing the host down would take the card the reader is looking
-// at with it, so an unchanged URL does nothing at all.
+// `navigatesuccess` also fires where nothing changed company: a replaceState
+// adding a tracking param, scroll restoration, a hash change, and LinkedIn's own
+// in-page tabs (/company/stripe -> /company/stripe/about/, the most common
+// navigation on the primary target site). Tearing the host down would take the
+// card the reader is mid-way through with it, so the resolved identifier — not
+// the href — decides whether anything is rebuilt. The href is only a cheap skip
+// for a navigation that did not move at all, and it names the URL in flight so
+// arriving back at it is not swallowed; a worker that never answered clears it
+// and gets retried.
 let unmount = null;
+let mountedKey = null;
 let navSeq = 0;
 let syncedHref = null;
 
 async function sync() {
   const href = location.href;
   if (href === syncedHref) return;
+  syncedHref = href;
   const me = ++navSeq;
-  unmount?.();
-  unmount = null;
   const res = await send({ type: 'init', url: href });
   if (me !== navSeq) return; // a later navigation already owns the pill
-  if (res) syncedHref = href; // a worker that never answered gets retried
-  if (res?.identifier) unmount = mount(res.css);
+  if (!res) {
+    syncedHref = null;
+    return;
+  }
+  const key = res.identifier ? `${res.identifier.kind}:${res.identifier.value}` : null;
+  if (key === mountedKey) return;
+  unmount?.();
+  mountedKey = key;
+  unmount = key ? mount(res.css) : null;
 }
 
 function start() {
