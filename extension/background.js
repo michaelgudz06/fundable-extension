@@ -34,17 +34,24 @@ const FONTS = [
   { weight: 600, url: 'https://www.tryfundable.ai/_next/static/media/cb07cb684de218c2-s.p.otf' },
 ];
 
+// Returning true keeps sendResponse alive across the await, which makes an
+// unanswered message indistinguishable from a hang: the panel sits on "Loading…"
+// until Chrome tears the worker down. resolver.js and the proxy are other
+// crewmates' work, so a throw from either is a live possibility.
+const respond = (work, sendResponse) =>
+  work.then(sendResponse, () => sendResponse({ error: 'unavailable' }));
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === 'init') {
-    init(msg.url).then(sendResponse);
+    respond(init(msg.url), sendResponse);
     return true;
   }
   if (msg?.type === 'lookup') {
-    lookup(msg.identifier).then(sendResponse);
+    respond(lookup(msg.identifier), sendResponse);
     return true;
   }
   if (msg?.type === 'fonts') {
-    fonts().then(sendResponse);
+    respond(fonts(), sendResponse);
     return true;
   }
 });
@@ -70,19 +77,33 @@ function panelCss() {
 // belongs to another crewmate, so the rule is enforced here, at the boundary
 // where the stylesheet enters the extension.
 //
-// This matches the url() construct itself rather than the properties that can
-// carry one — background, mask, border-image, cursor, list-style and whatever
-// ships next — because enumerating them is how this class of bug survives. The
-// same reasoning covers the constructs that carry a URL as a bare quoted string
-// with no url() token: image-set(), cross-fade(), whatever is invented next. So
-// every quoted http(s) string goes, wherever it sits. A content: string that
-// happens to be a URL goes with it; that is the price of not enumerating.
+// One pattern covers both shapes a reference can take: the url() construct, and
+// a bare quoted http(s) string, which is how image-set() — and whatever ships
+// next — carries one with no url() token at all. Matching the constructs rather
+// than the properties that can hold them (background, mask, border-image,
+// cursor, list-style, …) is the point: enumerating properties is how this class
+// of bug survives.
 //
-// Nothing catches every future construct, so the survivor warning is the
-// backstop that keeps the next one diagnosable instead of silent.
-const URL_TOKEN = /url\(\s*(['"]?)([^'")]*)\1\s*\)/gi;
+// url() wins the alternation, and a quoted url() runs to its matching quote, so
+// the quotes inside a data: URI — an inline SVG carries
+// xmlns='http://www.w3.org/2000/svg' — belong to that token and are never
+// mistaken for references of their own. data: is the only scheme panel.css is
+// allowed, so corrupting one would be worse than the leak this guards against.
+//
+// Nothing catches every future construct, so the survivor warning below is the
+// backstop that keeps the next one diagnosable instead of silent. A content:
+// string that happens to be a remote URL is stripped along with the real
+// references; that is the price of not enumerating.
+//
+// test/extension.test.js checks panel.css through this same export rather than
+// its own copy: the two drifted into the identical blind spot twice.
+export const CSS_REFERENCE =
+  /url\(\s*(?:"([^"]*)"|'([^']*)'|([^'")\s]*))\s*\)|(['"])\s*(https?:[^'"]*)\4/gi;
+
+export const cssReferences = (css) =>
+  [...css.matchAll(CSS_REFERENCE)].map((m) => (m[1] ?? m[2] ?? m[3] ?? m[5]).trim());
+
 const IMPORT_RULE = /@import\b[^;]*;?/gi;
-const REMOTE_STRING = /(['"])\s*https?:[^'"]*\1/gi;
 const REMOTE_LEFTOVER = /https?:\/\/[^\s'")]+/gi;
 
 function sanitizeCss(css) {
@@ -90,17 +111,16 @@ function sanitizeCss(css) {
   const drop = (token) => (stripped.push(token.trim()), '');
   const safe = css
     .replace(IMPORT_RULE, drop)
-    .replace(URL_TOKEN, (token, _quote, target) =>
-      /^data:/i.test(target.trim()) ? token : drop(token),
-    )
-    .replace(REMOTE_STRING, drop);
+    .replace(CSS_REFERENCE, (token, dq, sq, bare) =>
+      /^data:/i.test((dq ?? sq ?? bare ?? '').trim()) ? token : drop(token),
+    );
 
   if (stripped.length) {
     console.warn(
       `[fundable] stripped page-visible reference(s) from panel.css: ${stripped.join(', ')}`,
     );
   }
-  const survivors = safe.match(REMOTE_LEFTOVER);
+  const survivors = safe.replace(CSS_REFERENCE, '').match(REMOTE_LEFTOVER);
   if (survivors) {
     console.warn(
       `[fundable] panel.css still references ${survivors.join(', ')} after sanitising; ` +

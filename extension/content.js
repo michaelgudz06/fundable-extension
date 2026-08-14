@@ -329,12 +329,12 @@ let syncedHref = null;
 async function sync() {
   const href = location.href;
   if (href === syncedHref) return;
-  syncedHref = href;
   const me = ++navSeq;
   unmount?.();
   unmount = null;
   const res = await send({ type: 'init', url: href });
   if (me !== navSeq) return; // a later navigation already owns the pill
+  if (res) syncedHref = href; // a worker that never answered gets retried
   if (res?.identifier) unmount = mount(res.css);
 }
 
