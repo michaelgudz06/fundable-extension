@@ -45,7 +45,10 @@ Errors are `{"error": "<code>"}`:
 | 502 | `upstream_error` | anything else from Fundable, or the whole ladder exceeding its 5s deadline |
 | 503 | `temporarily_unavailable` | daily credit ceiling (including when it cannot be counted), or upstream `402` |
 
-`402` and `429` are never cached as misses, so a retry after recovery is a clean lookup.
+`402` and `429` are never cached as misses, so a retry after recovery is a clean lookup. The
+optional investors leg is the one failure that still returns `200`: the card is served with
+`investors: []` and cached for an hour instead of 24h, so a blip there isn't pinned for a day
+either.
 
 ### `GET /api/logo?domain=`
 
@@ -61,7 +64,8 @@ exposes nothing, and an `<img>` sends no `Origin`.
 1. cache lookup by identifier (24h) — **0 credits**
 2. `GET /company/search` — **0.1**; empty `data.companies` ⇒ record the miss, return `{found:false}`
 3. `GET /company?id=` — **1**
-4. `GET /deals/{id}/investors` when `latest_deal.id` exists — **1 per call**, not per row
+4. `GET /deals/{id}/investors` when `latest_deal.id` exists — **1 per call**, not per row;
+   any failure still bills the credit and keeps the card, cached 1h rather than 24h
 5. trim to the card, cache, return
 
 Full card 2.1 credits, miss 0.1, cached repeat 0.

@@ -82,9 +82,12 @@ export function normalizeIdentifier(kind: IdKind, raw: string): Identifier | nul
   return slug ? { kind, key: `${kind}:${slug}`, upstream: base + slug } : null;
 }
 
-// Must stay strictly under the extension's own card timeout (`CARD_TIMEOUT_MS`, 8s) with room
-// for the cache round trips either side, or the client always aborts first and the user sees
-// "could not reach Fundable" instead of the real cause this route worked out.
+// Bounds the ladder only, not the request. On a healthy cache that keeps total server time
+// under the extension's own card timeout (`CARD_TIMEOUT_MS`, 8s), so the client stops
+// aborting first and the user sees the real cause instead of "could not reach Fundable".
+// A degraded cache still breaks the inequality: the route makes up to five sequential
+// Upstash round trips before the ladder and one after, each up to `UPSTASH_TIMEOUT_MS`.
+// Closing that gap end to end means raising the client timeout, which lives in extension/.
 const UPSTREAM_TIMEOUT_MS = 5000;
 
 async function call(
@@ -163,10 +166,16 @@ function toCard(c: any, investors: any[]): Card {
  *
  * Whatever the ladder burned before a throw rides out on `UpstreamError.credits`, so the
  * daily ceiling can bill the failure paths that waste the most money.
+ *
+ * `degraded` says the returned card is missing investors because that leg failed, not
+ * because the company has none — the caller must not cache it as long as a clean one.
  */
-export async function fetchCard(id: Identifier): Promise<{ found: boolean; card?: Card; credits: number }> {
+export async function fetchCard(
+  id: Identifier,
+): Promise<{ found: boolean; card?: Card; credits: number; degraded?: boolean }> {
   const deadline = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
   let credits = 0;
+  let degraded = false;
   try {
     const search = await call('/company/search', { [id.kind]: id.upstream }, 0.1, deadline);
     credits = search.credits;
@@ -192,16 +201,19 @@ export async function fetchCard(id: Identifier): Promise<{ found: boolean; card?
         const res = await call(`/deals/${encodeURIComponent(dealId)}/investors`, {}, 1, deadline);
         credits += res.credits;
         investors = res.data.investors ?? [];
-      } catch {
+      } catch (e) {
         // The card is already bought and paid for by the two legs above, and one without
         // investors is still usable — so no failure of this optional leg may throw it away.
         // Bill the leg anyway: over-counting is the safe direction for a spend ceiling.
+        // A 402 here is the account running out of credits: log it or that signal is lost.
+        console.error('investors leg failed', e instanceof Error ? e.message : e);
         credits += 1;
+        degraded = true;
       }
     }
 
     // Search row first: the detail response wins on every shared field but has no `website`.
-    return { found: true, card: toCard({ ...match, ...company }, investors), credits };
+    return { found: true, card: toCard({ ...match, ...company }, investors), credits, degraded };
   } catch (e) {
     if (e instanceof UpstreamError) e.credits = credits;
     throw e;

@@ -3,6 +3,9 @@ import { fetchCard, normalizeIdentifier, UpstreamError, type IdKind } from '../.
 
 const KINDS: IdKind[] = ['domain', 'linkedin', 'crunchbase'];
 const CARD_TTL = 86400; // 24h, hits and misses alike
+// A card whose investors leg failed is short a section the next lookup could fill, so it
+// gets the hour the logo route gives its fallback rather than being pinned for a day.
+const DEGRADED_CARD_TTL = 3600;
 const CREDIT_TTL = 172800;
 const RESERVE = 2.1; // the priciest ladder: search 0.1 + company 1 + investors 1
 
@@ -72,7 +75,7 @@ export async function GET(req: Request) {
       return json({ error: 'temporarily_unavailable' }, 503, cors);
     }
 
-    const { found, card, credits } = await fetchCard(id);
+    const { found, card, credits, degraded } = await fetchCard(id);
     spent = credits;
     const payload = found ? { found: true, card } : { found: false };
 
@@ -80,7 +83,11 @@ export async function GET(req: Request) {
     // the answer: a failed write degrades to "not cached", not to an error.
     try {
       if (!found) await cache.recordMiss(id.key);
-      await cache.set(`company:${id.key}`, JSON.stringify(payload), CARD_TTL);
+      await cache.set(
+        `company:${id.key}`,
+        JSON.stringify(payload),
+        degraded ? DEGRADED_CARD_TTL : CARD_TTL,
+      );
     } catch (e) {
       console.error('cache write failed', e instanceof Error ? e.message : e);
     }

@@ -495,6 +495,7 @@ describe('GET /api/company', () => {
   it.each([402, 429])(
     'keeps the already-paid-for card when the investors leg answers %i, and bills all 2.1',
     async (status) => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
       stubUpstream([200, SEARCH_HIT], [200, COMPANY], [status, { error: 'nope' }]);
       vi.resetModules();
       const { getCache } = await import('../../../lib/cache');
@@ -509,4 +510,48 @@ describe('GET /api/company', () => {
       expect(Number(await getCache().get(creditKey()))).toBeCloseTo(2.1);
     },
   );
+
+  // Investors missing because the leg failed reads identically to a company with none, so
+  // the 24h TTL used to pin a transient blip on every caller for a day with no retry path.
+  it.each([
+    ['a clean card for 24h', [200, INVESTORS] as [number, unknown], 86400],
+    ['a card whose investors leg 429d for 1h only', [429, { error: 'slow down' }] as [number, unknown], 3600],
+  ])('caches %s', async (_label, investorsLeg, ttl) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubUpstream([200, SEARCH_HIT], [200, COMPANY], investorsLeg);
+    vi.resetModules();
+    const { getCache } = await import('../../../lib/cache');
+    const { GET } = await import('./route');
+    const set = vi.spyOn(getCache(), 'set');
+
+    expect((await GET(req())).status).toBe(200);
+    expect(set).toHaveBeenCalledWith('company:domain:wealthsimple.com', expect.any(String), ttl);
+  });
+
+  // INCRBYFLOAT and EXPIRE are two Upstash requests: failing the second used to reject a
+  // reservation that had already committed, so the route 503'd *and* left the 2.1 on the
+  // day's counter with no settle — phantom spend that shuts the brake for the rest of the day.
+  it('spends and answers normally when only the EXPIRE half of a counter write fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.UPSTASH_REDIS_REST_URL = 'https://redis.test';
+    process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
+    const fundable = [SEARCH_HIT, COMPANY, INVESTORS];
+    const totals: Record<string, number> = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: URL | string, init: RequestInit) => {
+        if (!String(input).startsWith('https://redis.test')) return Response.json(fundable.shift());
+        const [cmd, key, by] = JSON.parse(init.body as string) as [string, string, number];
+        if (cmd === 'EXPIRE') return new Response('down', { status: 500 });
+        if (cmd === 'INCRBYFLOAT') {
+          return Response.json({ result: String((totals[key] = (totals[key] ?? 0) + by)) });
+        }
+        return Response.json({ result: cmd === 'GET' ? null : 1 });
+      }),
+    );
+    const { GET } = await loadRoute();
+
+    expect((await GET(req())).status).toBe(200);
+    expect(totals[creditKey()]).toBeCloseTo(2.1);
+  });
 });

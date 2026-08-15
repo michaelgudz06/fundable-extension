@@ -149,6 +149,7 @@ describe('fetchCard ladder', () => {
     expect(calls[2]).toBe('https://api.test/v1/deals/deal-1/investors');
     expect(result.credits).toBeCloseTo(2.1);
     expect(result.found).toBe(true);
+    expect(result.degraded).toBe(false);
   });
 
   it('trims to the card contract and drops every unlisted upstream field', async () => {
@@ -221,20 +222,29 @@ describe('fetchCard ladder', () => {
   // The company legs are paid for by the time this one runs, so no status may discard the
   // card. 404 was always tolerated; 402/429/500 used to rethrow and throw the card away.
   it.each([404, 402, 429, 500])('still returns a card when the investor call %is', async (status) => {
+    // A 402 here is the account out of credits — the caller logs it rather than swallowing it.
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     stubFetch({ ...hitRoutes, '/investors': [status, { error: 'nope' }, { 'retry-after': '12' }] });
     const result = await fetchCard(id);
     expect(result.found).toBe(true);
     expect(result.card!.name).toBe(COMPANY.name);
     expect(result.card!.investors).toEqual([]);
     expect(result.credits).toBeCloseTo(2.1);
+    // Empty investors here means "the leg failed", not "no investor record" — the caller
+    // needs the difference to decide how long this card may be cached.
+    expect(result.degraded).toBe(true);
+    expect(logged).toHaveBeenCalled();
+    expect(JSON.stringify(logged.mock.calls)).not.toContain('test-key');
   });
 
   it('still returns a card when the investor call fails outside the upstream contract', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     // No `/investors` route: the stub throws a plain Error, standing in for an abort.
     stubFetch({ '/company/search': hitRoutes['/company/search'], '/company?': hitRoutes['/company?'] });
     const result = await fetchCard(id);
     expect(result.found).toBe(true);
     expect(result.card!.investors).toEqual([]);
+    expect(result.degraded).toBe(true);
   });
 
   // Without this the daily ceiling is blind to the failure paths that waste the most money.
