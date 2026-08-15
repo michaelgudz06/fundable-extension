@@ -42,8 +42,8 @@ Errors are `{"error": "<code>"}`:
 | 400 | `bad_request` | missing, unknown, or malformed identifier |
 | 403 | `forbidden` | `Origin` present and not `ALLOWED_EXTENSION_ORIGIN` |
 | 429 | `rate_limited` | per-IP limit, or upstream `429` (`Retry-After` forwarded) |
-| 502 | `upstream_error` | anything else from Fundable, or the whole ladder exceeding its 8s deadline |
-| 503 | `temporarily_unavailable` | kill switch, daily credit ceiling, or upstream `402` |
+| 502 | `upstream_error` | anything else from Fundable, or the whole ladder exceeding its 5s deadline |
+| 503 | `temporarily_unavailable` | daily credit ceiling (including when it cannot be counted), or upstream `402` |
 
 `402` and `429` are never cached as misses, so a retry after recovery is a clean lookup.
 
@@ -78,9 +78,21 @@ for production.
 | `ALLOWED_EXTENSION_ORIGIN` | production | the extension's pinned origin, `chrome-extension://<id>`. **Unset means every request carrying an `Origin` header is refused** — set it once the MV3 build pins its ID. Requests with no `Origin` (curl, server-to-server) are allowed. |
 | `UPSTASH_REDIS_REST_URL` | no | with the token below, switches the cache to Upstash |
 | `UPSTASH_REDIS_REST_TOKEN` | no | |
-| `RATE_LIMIT_PER_MIN` | no | per IP, default 30. Blank or unset uses the default; `0` is a deliberate lever that refuses all traffic |
-| `DAILY_CREDIT_LIMIT` | no | default 500; over it, every lookup returns `temporarily_unavailable`. Blank or unset uses the default; `0` is a deliberate lever that halts all spend |
-| `KILL_SWITCH` | no | `1` makes every lookup return `temporarily_unavailable` without calling Fundable |
+| `RATE_LIMIT_PER_MIN` | no | per IP, default 30. Blank or unset uses the default. The IP comes from `x-vercel-forwarded-for` / `x-real-ip`, never from the caller-written `x-forwarded-for` |
+| `DAILY_CREDIT_LIMIT` | no | **the spend gate.** Default 500; over it, every lookup that would spend returns `temporarily_unavailable`. Blank or unset uses the default. `0` is the emergency stop |
+
+### Stopping spend
+
+`DAILY_CREDIT_LIMIT=0` is the whole brake — there is no separate `KILL_SWITCH`, and there
+was never a reason for two levers with the same job and two ways to fail open. Set it to `0`
+and no lookup reaches Fundable; cards already cached keep being served, because serving them
+costs nothing. Vercel binds env vars per deployment, so a change needs a redeploy to take.
+
+The ceiling reserves the worst-case ladder (2.1) before calling Fundable and settles it
+against real spend afterwards, so a concurrent burst cannot all pass the same check, and
+credits burned by a ladder that then failed are still billed against the day. If the counter
+itself is unreachable the route returns `503` rather than spending money it cannot count —
+the only place a cache failure is allowed to cost the caller an answer.
 
 **Cache:** without the two Upstash variables the cache is an in-process `Map`, which does
 not survive across serverless invocations — on Vercel that means no caching and a

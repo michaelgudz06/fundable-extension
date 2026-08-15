@@ -218,12 +218,40 @@ describe('fetchCard ladder', () => {
     expect(await fetchCard(id)).toEqual({ found: false, credits: 1.1 });
   });
 
-  it('still returns a card when the investor call 404s', async () => {
-    stubFetch({ ...hitRoutes, '/investors': [404, { error: 'not found' }] });
+  // The company legs are paid for by the time this one runs, so no status may discard the
+  // card. 404 was always tolerated; 402/429/500 used to rethrow and throw the card away.
+  it.each([404, 402, 429, 500])('still returns a card when the investor call %is', async (status) => {
+    stubFetch({ ...hitRoutes, '/investors': [status, { error: 'nope' }, { 'retry-after': '12' }] });
+    const result = await fetchCard(id);
+    expect(result.found).toBe(true);
+    expect(result.card!.name).toBe(COMPANY.name);
+    expect(result.card!.investors).toEqual([]);
+    expect(result.credits).toBeCloseTo(2.1);
+  });
+
+  it('still returns a card when the investor call fails outside the upstream contract', async () => {
+    // No `/investors` route: the stub throws a plain Error, standing in for an abort.
+    stubFetch({ '/company/search': hitRoutes['/company/search'], '/company?': hitRoutes['/company?'] });
     const result = await fetchCard(id);
     expect(result.found).toBe(true);
     expect(result.card!.investors).toEqual([]);
-    expect(result.credits).toBeCloseTo(2.1);
+  });
+
+  // Without this the daily ceiling is blind to the failure paths that waste the most money.
+  it.each([
+    ['/company/search', 0],
+    ['/company?', 0.1],
+  ])('carries the credits already burned when %s throws', async (route, burned) => {
+    stubFetch({ ...hitRoutes, [route]: [500, { error: 'boom' }] });
+    const err = await fetchCard(id).catch((e) => e);
+    expect(err).toBeInstanceOf(UpstreamError);
+    expect(err.credits).toBeCloseTo(burned);
+  });
+
+  it('carries the credits already burned when the detail body has no company', async () => {
+    stubFetch({ ...hitRoutes, '/company?': [200, { success: true, data: {}, meta: { credits_used: 1 } }] });
+    const err = await fetchCard(id).catch((e) => e);
+    expect(err.credits).toBeCloseTo(1.1);
   });
 
   it.each([402, 429, 500])('throws UpstreamError on %i rather than reporting a miss', async (status) => {

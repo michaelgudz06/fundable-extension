@@ -38,6 +38,8 @@ export type Card = {
 };
 
 export class UpstreamError extends Error {
+  /** Credits the earlier legs of the ladder already burned before this one failed. */
+  credits = 0;
   constructor(readonly status: number, readonly retryAfter?: string) {
     super(`fundable upstream ${status}`);
   }
@@ -80,7 +82,10 @@ export function normalizeIdentifier(kind: IdKind, raw: string): Identifier | nul
   return slug ? { kind, key: `${kind}:${slug}`, upstream: base + slug } : null;
 }
 
-const UPSTREAM_TIMEOUT_MS = 8000;
+// Must stay strictly under the extension's own card timeout (`CARD_TIMEOUT_MS`, 8s) with room
+// for the cache round trips either side, or the client always aborts first and the user sees
+// "could not reach Fundable" instead of the real cause this route worked out.
+const UPSTREAM_TIMEOUT_MS = 5000;
 
 async function call(
   path: string,
@@ -153,41 +158,52 @@ function toCard(c: any, investors: any[]): Card {
 
 /**
  * search (0.1cr) -> company (1cr) -> investors (1cr). A `200` with no companies, or a `404`
- * on the company lookup, is a genuine miss; `402`/`429` throw and must not be cached as one.
+ * on the company lookup, is a genuine miss; a `402`/`429` on either of those two throws and
+ * must not be cached as one. The investors leg never throws — see below.
+ *
+ * Whatever the ladder burned before a throw rides out on `UpstreamError.credits`, so the
+ * daily ceiling can bill the failure paths that waste the most money.
  */
 export async function fetchCard(id: Identifier): Promise<{ found: boolean; card?: Card; credits: number }> {
   const deadline = AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
-  const search = await call('/company/search', { [id.kind]: id.upstream }, 0.1, deadline);
-  let credits = search.credits;
-
-  const match = search.data.companies?.[0];
-  if (!match?.id) return { found: false, credits };
-
-  let company;
+  let credits = 0;
   try {
-    const res = await call('/company', { id: match.id }, 1, deadline);
-    credits += res.credits;
-    company = res.data.company;
+    const search = await call('/company/search', { [id.kind]: id.upstream }, 0.1, deadline);
+    credits = search.credits;
+
+    const match = search.data.companies?.[0];
+    if (!match?.id) return { found: false, credits };
+
+    let company;
+    try {
+      const res = await call('/company', { id: match.id }, 1, deadline);
+      credits += res.credits;
+      company = res.data.company;
+    } catch (e) {
+      if (e instanceof UpstreamError && e.status === 404) return { found: false, credits: credits + 1 };
+      throw e;
+    }
+    if (!company) throw new UpstreamError(502);
+
+    let investors: any[] = [];
+    const dealId = company.latest_deal?.id;
+    if (dealId) {
+      try {
+        const res = await call(`/deals/${encodeURIComponent(dealId)}/investors`, {}, 1, deadline);
+        credits += res.credits;
+        investors = res.data.investors ?? [];
+      } catch {
+        // The card is already bought and paid for by the two legs above, and one without
+        // investors is still usable — so no failure of this optional leg may throw it away.
+        // Bill the leg anyway: over-counting is the safe direction for a spend ceiling.
+        credits += 1;
+      }
+    }
+
+    // Search row first: the detail response wins on every shared field but has no `website`.
+    return { found: true, card: toCard({ ...match, ...company }, investors), credits };
   } catch (e) {
-    if (e instanceof UpstreamError && e.status === 404) return { found: false, credits: credits + 1 };
+    if (e instanceof UpstreamError) e.credits = credits;
     throw e;
   }
-  if (!company) throw new UpstreamError(502);
-
-  let investors: any[] = [];
-  const dealId = company.latest_deal?.id;
-  if (dealId) {
-    try {
-      const res = await call(`/deals/${encodeURIComponent(dealId)}/investors`, {}, 1, deadline);
-      credits += res.credits;
-      investors = res.data.investors ?? [];
-    } catch (e) {
-      // A deal with no investor record still makes a usable card.
-      if (!(e instanceof UpstreamError && e.status === 404)) throw e;
-      credits += 1;
-    }
-  }
-
-  // Search row first: the detail response wins on every shared field but has no `website`.
-  return { found: true, card: toCard({ ...match, ...company }, investors), credits };
 }
