@@ -1,28 +1,12 @@
 /* Fundable company card — Shadow DOM stylesheet.
    Tokens read off the live product (tryfundable.ai/company/wealthsimple), not the spec sheet.
 
-   PP Mori is hotlinked (ACAO is `*`, so cross-origin is fine) but the hashed filenames
-   rotate on every Fundable deploy, so Helvetica/Arial has to carry the card on its own —
-   the type scale below is set so it does.
-
-   Chrome ignores @font-face declared inside a shadow root: verified, the .otf is never
-   even fetched. For PP Mori to load, content.js must register these two faces at document
-   level as well (a <style> in the host page, or document.fonts.add(new FontFace(...))).
-   Until it does, every user sees the Helvetica fallback. */
-
-@font-face {
-  font-family: 'PP Mori';
-  font-weight: 400;
-  font-display: swap;
-  src: url('https://www.tryfundable.ai/_next/static/media/8f65835aa057b6ed-s.p.otf') format('opentype');
-}
-
-@font-face {
-  font-family: 'PP Mori';
-  font-weight: 600;
-  font-display: swap;
-  src: url('https://www.tryfundable.ai/_next/static/media/cb07cb684de218c2-s.p.otf') format('opentype');
-}
+   No @font-face here, deliberately: Chrome ignores one declared inside a shadow root.
+   background.js fetches the PP Mori files and content.js registers them by way of
+   document.fonts.add(), so the family name in the stack below is a contract with
+   content.js — keep the two in sync. The hashed font filenames rotate on every Fundable
+   deploy, so Helvetica/Arial still has to carry the card whenever that fetch fails; the
+   type scale below is set so it does. */
 
 .fx-panel,
 .fx-pill {
