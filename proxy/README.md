@@ -84,7 +84,7 @@ for production.
 | `ALLOWED_EXTENSION_ORIGIN` | production | the extension's pinned origin, `chrome-extension://<id>`. **Unset means every request carrying an `Origin` header is refused** — set it once the MV3 build pins its ID. Requests with no `Origin` (curl, server-to-server) are allowed. |
 | `UPSTASH_REDIS_REST_URL` | no | with the token below, switches the cache to Upstash |
 | `UPSTASH_REDIS_REST_TOKEN` | no | |
-| `RATE_LIMIT_PER_MIN` | no | per IP, default 30. Blank or unset uses the default. The IP comes from `x-vercel-forwarded-for` / `x-real-ip`, never from the caller-written `x-forwarded-for` |
+| `RATE_LIMIT_PER_MIN` | no | per IP, default 30. Blank or unset uses the default. The IP comes from `x-vercel-forwarded-for` / `x-real-ip`, never from the caller-written `x-forwarded-for` — so behind anything that sets neither header every caller shares one bucket, which is the fail-safe direction but not per-IP |
 | `DAILY_CREDIT_LIMIT` | no | **the spend gate.** Default 500; over it, every lookup that would spend returns `temporarily_unavailable`. Blank or unset uses the default. `0` is the emergency stop |
 
 ### Stopping spend
