@@ -1,0 +1,97 @@
+// Backing store for company cards, the daily credit counter and the per-IP rate limiter.
+// Upstash REST when UPSTASH_REDIS_REST_URL + UPSTASH_REDIS_REST_TOKEN are set, otherwise
+// an in-process Map.
+//
+// ponytail: the Map fallback does not survive across serverless invocations — on Vercel it
+// degrades to "no cache" (every request pays credits) and a per-instance rate limit.
+// Setting the two env vars is the whole upgrade; no code change.
+
+export type Cache = {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  incrByFloat(key: string, by: number, ttlSeconds: number): Promise<number>;
+  /** Coverage-gap list: domains we were asked for and could not answer. */
+  recordMiss(identifier: string): Promise<void>;
+};
+
+const UPSTASH_TIMEOUT_MS = 3000;
+
+async function upstash(cmd: (string | number)[]): Promise<unknown> {
+  const res = await fetch(process.env.UPSTASH_REDIS_REST_URL!, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${process.env.UPSTASH_REDIS_REST_TOKEN}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(cmd),
+    signal: AbortSignal.timeout(UPSTASH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`upstash ${res.status}`);
+  return ((await res.json()) as { result: unknown }).result;
+}
+
+const redis: Cache = {
+  async get(key) {
+    return ((await upstash(['GET', key])) as string | null) ?? null;
+  },
+  async set(key, value, ttlSeconds) {
+    await upstash(['SET', key, value, 'EX', ttlSeconds]);
+  },
+  async incrByFloat(key, by, ttlSeconds) {
+    const total = Number(await upstash(['INCRBYFLOAT', key, by]));
+    await upstash(['EXPIRE', key, ttlSeconds, 'NX']);
+    return total;
+  },
+  async recordMiss(identifier) {
+    await upstash(['ZADD', 'misses', Date.now(), identifier]);
+  },
+};
+
+const store = new Map<string, { value: string; expiresAt: number }>();
+// Expired keys are otherwise only reclaimed by a get() that never comes (rate-limit buckets),
+// so a write past this size sweeps them. Live entries are never evicted: the real ceiling is
+// the number of unexpired keys — one 24h entry per distinct identifier looked up.
+const SWEEP_ABOVE = 10_000;
+
+// Synchronous so incrByFloat can read and write with no await in between: invocations share
+// one event loop, and an interleaved read-modify-write silently loses increments.
+function read(key: string): string | null {
+  const hit = store.get(key);
+  if (!hit) return null;
+  if (hit.expiresAt <= Date.now()) {
+    store.delete(key);
+    return null;
+  }
+  return hit.value;
+}
+
+function write(key: string, value: string, ttlSeconds: number) {
+  if (store.size > SWEEP_ABOVE) {
+    const now = Date.now();
+    for (const [k, entry] of store) if (entry.expiresAt <= now) store.delete(k);
+  }
+  store.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 });
+}
+
+const memory: Cache = {
+  async get(key) {
+    return read(key);
+  },
+  async set(key, value, ttlSeconds) {
+    write(key, value, ttlSeconds);
+  },
+  async incrByFloat(key, by, ttlSeconds) {
+    const total = Number(read(key) ?? 0) + by;
+    write(key, String(total), ttlSeconds);
+    return total;
+  },
+  async recordMiss() {
+    // No coverage-gap list without Redis; misses are still cached as `{found:false}`.
+  },
+};
+
+export function getCache(): Cache {
+  return process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN
+    ? redis
+    : memory;
+}
