@@ -39,7 +39,9 @@ const redis: Cache = {
   },
   async incrByFloat(key, by, ttlSeconds) {
     const total = Number(await upstash(['INCRBYFLOAT', key, by]));
-    await upstash(['EXPIRE', key, ttlSeconds, 'NX']);
+    // Separate request: the increment has already committed, so a failure here must not
+    // reject a caller that is holding a reservation it would then never settle.
+    await upstash(['EXPIRE', key, ttlSeconds, 'NX']).catch(() => {});
     return total;
   },
   async recordMiss(identifier) {
