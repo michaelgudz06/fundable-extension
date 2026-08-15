@@ -223,7 +223,7 @@ describe('GET /api/company', () => {
   });
 
   it('holds the ceiling shut, not the endpoint open, when the cache backend fails', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.UPSTASH_REDIS_REST_URL = 'https://redis.test';
     process.env.UPSTASH_REDIS_REST_TOKEN = 'token';
     const fundable = vi.fn();
@@ -242,6 +242,10 @@ describe('GET /api/company', () => {
     expect(await res.json()).toEqual({ error: 'temporarily_unavailable' });
     // Spend we cannot count is the one failure the ceiling exists to prevent.
     expect(fundable).not.toHaveBeenCalled();
+    // This 503 is byte-identical to "the day's budget is spent", which needs the opposite
+    // response, so an unreachable counter has to say so somewhere.
+    expect(logged.mock.calls.flat().join(' ')).toContain('credit reservation failed');
+    expect(JSON.stringify(logged.mock.calls)).not.toContain('token');
   });
 
   it('serves a cached card while the cache read itself is failing', async () => {
@@ -515,7 +519,11 @@ describe('GET /api/company', () => {
   // the 24h TTL used to pin a transient blip on every caller for a day with no retry path.
   it.each([
     ['a clean card for 24h', [200, INVESTORS] as [number, unknown], 86400],
+    // A 404 is the deal having no investors, not a blip: an hourly retry can never improve
+    // it and would re-buy the same card 24 times a day.
+    ['a card whose deal has no investors for the full 24h', [404, { error: 'NOT_FOUND' }] as [number, unknown], 86400],
     ['a card whose investors leg 429d for 1h only', [429, { error: 'slow down' }] as [number, unknown], 3600],
+    ['a card whose investors leg 500d for 1h only', [500, { error: 'boom' }] as [number, unknown], 3600],
   ])('caches %s', async (_label, investorsLeg, ttl) => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     stubUpstream([200, SEARCH_HIT], [200, COMPANY], investorsLeg);
@@ -526,6 +534,43 @@ describe('GET /api/company', () => {
 
     expect((await GET(req())).status).toBe(200);
     expect(set).toHaveBeenCalledWith('company:domain:wealthsimple.com', expect.any(String), ttl);
+  });
+
+  // The reservation is 2.1; a timeout is not an UpstreamError, so the settle used to leave
+  // all of it on the counter. ~238 timed-out requests then exhausted the default 500 ceiling
+  // and the proxy 503'd for the rest of the day over credits nobody spent.
+  it.each([
+    ['the first leg', 0, 0],
+    ['the second leg', 1, 0.1],
+  ])('bills only what was really burned when %s times out', async (_leg, ok, burned) => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (calls++ >= ok) throw new Error('The operation was aborted due to timeout');
+        return Response.json(SEARCH_HIT);
+      }),
+    );
+    vi.resetModules();
+    const { getCache } = await import('../../../lib/cache');
+    const { GET } = await import('./route');
+
+    expect((await GET(req())).status).toBe(502);
+    expect(Number(await getCache().get(creditKey()))).toBeCloseTo(burned);
+  });
+
+  it('bills nothing for a request that never reached Fundable at all', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    delete process.env.FUNDABLE_API_KEY;
+    const upstream = stubUpstream([200, SEARCH_HIT]);
+    vi.resetModules();
+    const { getCache } = await import('../../../lib/cache');
+    const { GET } = await import('./route');
+
+    expect((await GET(req())).status).toBe(502);
+    expect(upstream).not.toHaveBeenCalled();
+    expect(Number(await getCache().get(creditKey()))).toBe(0);
   });
 
   // INCRBYFLOAT and EXPIRE are two Upstash requests: failing the second used to reject a

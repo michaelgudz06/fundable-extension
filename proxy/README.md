@@ -48,7 +48,8 @@ Errors are `{"error": "<code>"}`:
 `402` and `429` are never cached as misses, so a retry after recovery is a clean lookup. The
 optional investors leg is the one failure that still returns `200`: the card is served with
 `investors: []` and cached for an hour instead of 24h, so a blip there isn't pinned for a day
-either.
+either. A `404` on that leg is the deal genuinely having no investor record — nothing to
+retry, so that card keeps the full 24h.
 
 ### `GET /api/logo?domain=`
 
@@ -65,7 +66,8 @@ exposes nothing, and an `<img>` sends no `Origin`.
 2. `GET /company/search` — **0.1**; empty `data.companies` ⇒ record the miss, return `{found:false}`
 3. `GET /company?id=` — **1**
 4. `GET /deals/{id}/investors` when `latest_deal.id` exists — **1 per call**, not per row;
-   any failure still bills the credit and keeps the card, cached 1h rather than 24h
+   any failure still bills the credit and keeps the card, cached 1h rather than 24h unless it
+   was a `404` (no investor record, so nothing a retry would add)
 5. trim to the card, cache, return
 
 Full card 2.1 credits, miss 0.1, cached repeat 0.
@@ -94,9 +96,12 @@ costs nothing. Vercel binds env vars per deployment, so a change needs a redeplo
 
 The ceiling reserves the worst-case ladder (2.1) before calling Fundable and settles it
 against real spend afterwards, so a concurrent burst cannot all pass the same check, and
-credits burned by a ladder that then failed are still billed against the day. If the counter
-itself is unreachable the route returns `503` rather than spending money it cannot count —
-the only place a cache failure is allowed to cost the caller an answer.
+credits burned by a ladder that then failed are still billed against the day — a timeout on
+the first leg settles back to 0, one after search to 0.1, so a Fundable slowdown cannot pile
+up phantom credits and close the brake for the rest of the day. If the counter itself is
+unreachable the route returns `503` rather than spending money it cannot count — the only
+place a cache failure is allowed to cost the caller an answer, and the reason that failure is
+logged: the two 503s are byte-identical.
 
 **Cache:** without the two Upstash variables the cache is an in-process `Map`, which does
 not survive across serverless invocations — on Vercel that means no caching and a

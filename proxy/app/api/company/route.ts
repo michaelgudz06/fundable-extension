@@ -1,5 +1,5 @@
 import { getCache } from '../../../lib/cache';
-import { fetchCard, normalizeIdentifier, UpstreamError, type IdKind } from '../../../lib/fundable';
+import { creditsBurned, fetchCard, normalizeIdentifier, UpstreamError, type IdKind } from '../../../lib/fundable';
 
 const KINDS: IdKind[] = ['domain', 'linkedin', 'crunchbase'];
 const CARD_TTL = 86400; // 24h, hits and misses alike
@@ -56,10 +56,18 @@ export async function GET(req: Request) {
     const perMinute = Number.isFinite(rateEnv) && rateEnv >= 0 ? rateEnv : 30;
     // The limiter and the card cache are optimisations: when the backing store blips they
     // degrade to a slower correct answer, never to an outage.
-    const hits = await cache.incrByFloat(`rl:${ip}:${Math.floor(Date.now() / 60000)}`, 1, 120).catch(() => 0);
+    const hits = await cache
+      .incrByFloat(`rl:${ip}:${Math.floor(Date.now() / 60000)}`, 1, 120)
+      .catch((e) => {
+        console.error('rate limit check failed', e instanceof Error ? e.message : e);
+        return 0;
+      });
     if (hits > perMinute) return json({ error: 'rate_limited' }, 429, { ...cors, 'retry-after': '60' });
 
-    const cached = await cache.get(`company:${id.key}`).catch(() => null);
+    const cached = await cache.get(`company:${id.key}`).catch((e) => {
+      console.error('cache read failed', e instanceof Error ? e.message : e);
+      return null;
+    });
     if (cached) return json(JSON.parse(cached), 200, cors);
 
     const limitEnv = Number(process.env.DAILY_CREDIT_LIMIT?.trim() || NaN);
@@ -69,7 +77,12 @@ export async function GET(req: Request) {
     // distinct totals — reading then writing let every request in the burst pass at once.
     // Unlike the two calls above this one degrades *closed*: spend we cannot count is the
     // single failure the ceiling exists to prevent.
-    reserved = await cache.incrByFloat(creditKey, RESERVE, CREDIT_TTL).catch(() => Infinity);
+    // Logged because this 503 is byte-identical to the ceiling-reached one below, and the
+    // two need opposite responses from whoever is on call.
+    reserved = await cache.incrByFloat(creditKey, RESERVE, CREDIT_TTL).catch((e) => {
+      console.error('credit reservation failed', e instanceof Error ? e.message : e);
+      return Infinity;
+    });
     if (reserved - RESERVE >= dailyLimit) {
       spent = 0;
       return json({ error: 'temporarily_unavailable' }, 503, cors);
@@ -93,8 +106,9 @@ export async function GET(req: Request) {
     }
     return json(payload, 200, cors);
   } catch (e) {
+    const burned = creditsBurned(e); // what the earlier legs burned before this one threw
+    if (burned !== null) spent = burned;
     if (e instanceof UpstreamError) {
-      spent = e.credits; // what the earlier legs burned before this one threw
       // 402/429 are not misses — never cached, so a retry after recovery is a clean lookup.
       if (e.status === 402) return json({ error: 'temporarily_unavailable' }, 503, cors);
       if (e.status === 429) {
@@ -105,8 +119,8 @@ export async function GET(req: Request) {
     return json({ error: 'upstream_error' }, 502, cors);
   } finally {
     // Settle the reservation against what the ladder really burned — on the failure paths
-    // too, or the ceiling under-reports exactly where the money goes. An error we cannot
-    // price keeps the full reservation.
+    // too, or the ceiling under-reports exactly where the money goes. Only a failure nothing
+    // priced at all keeps the full reservation.
     if (Number.isFinite(reserved) && spent !== RESERVE) {
       await cache
         .incrByFloat(creditKey, spent - RESERVE, CREDIT_TTL)

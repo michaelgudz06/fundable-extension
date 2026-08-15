@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fetchCard, normalizeIdentifier, UpstreamError } from './fundable';
+import { creditsBurned, fetchCard, normalizeIdentifier, UpstreamError } from './fundable';
 
 const COMPANY = {
   id: 'uuid-1',
@@ -230,11 +230,23 @@ describe('fetchCard ladder', () => {
     expect(result.card!.name).toBe(COMPANY.name);
     expect(result.card!.investors).toEqual([]);
     expect(result.credits).toBeCloseTo(2.1);
-    // Empty investors here means "the leg failed", not "no investor record" — the caller
-    // needs the difference to decide how long this card may be cached.
-    expect(result.degraded).toBe(true);
-    expect(logged).toHaveBeenCalled();
     expect(JSON.stringify(logged.mock.calls)).not.toContain('test-key');
+  });
+
+  // 404 is the deal saying it has no investor record — permanent, identical on every retry.
+  // Calling that degraded would make the card re-cost 2.1 credits hourly instead of daily.
+  it('does not mark a card degraded when the deal simply has no investors', async () => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubFetch({ ...hitRoutes, '/investors': [404, { error: 'NOT_FOUND' }] });
+    expect((await fetchCard(id)).degraded).toBe(false);
+    expect(logged).not.toHaveBeenCalled();
+  });
+
+  it.each([402, 429, 500])('marks the card degraded when the investor call %is', async (status) => {
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    stubFetch({ ...hitRoutes, '/investors': [status, { error: 'nope' }] });
+    expect((await fetchCard(id)).degraded).toBe(true);
+    expect(logged).toHaveBeenCalled();
   });
 
   it('still returns a card when the investor call fails outside the upstream contract', async () => {
@@ -256,6 +268,40 @@ describe('fetchCard ladder', () => {
     const err = await fetchCard(id).catch((e) => e);
     expect(err).toBeInstanceOf(UpstreamError);
     expect(err.credits).toBeCloseTo(burned);
+  });
+
+  // A timeout is not an UpstreamError, so it used to carry no price at all and the caller
+  // had to assume the worst-case 2.1 for a request that may have spent nothing.
+  it.each([
+    ['the first leg', 0, 0],
+    ['the second leg', 1, 0.1],
+  ])('prices what the ladder burned when %s fails outside the upstream contract', async (_leg, ok, burned) => {
+    let calls = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        if (calls++ >= ok) throw new Error('The operation was aborted due to timeout');
+        return Response.json({ data: { companies: [{ id: 'uuid-1' }] }, meta: { credits_used: 0.1 } });
+      }),
+    );
+
+    const err = await fetchCard(id).catch((e) => e);
+    expect(creditsBurned(err)).toBeCloseTo(burned);
+  });
+
+  it('prices a missing API key at nothing, since it never reaches Fundable', async () => {
+    const key = process.env.FUNDABLE_API_KEY;
+    delete process.env.FUNDABLE_API_KEY;
+    stubFetch(hitRoutes);
+
+    const err = await fetchCard(id).catch((e) => e);
+    process.env.FUNDABLE_API_KEY = key;
+    expect(creditsBurned(err)).toBe(0);
+  });
+
+  it('leaves a failure nothing priced unpriced, rather than calling it free', () => {
+    expect(creditsBurned('not an error')).toBeNull();
+    expect(creditsBurned(new Error('never reached fetchCard'))).toBeNull();
   });
 
   it('carries the credits already burned when the detail body has no company', async () => {

@@ -45,6 +45,16 @@ export class UpstreamError extends Error {
   }
 }
 
+/**
+ * What the ladder had burned when `e` was thrown — `0` for a timeout on the first leg, `0.1`
+ * once search has been paid for, and so on. `null` only when nothing priced the failure,
+ * which is the caller's cue to assume the worst rather than to bill zero.
+ */
+export function creditsBurned(e: unknown): number | null {
+  const credits = (e as { credits?: unknown } | null)?.credits;
+  return typeof credits === 'number' && Number.isFinite(credits) ? credits : null;
+}
+
 const DOMAIN = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const SLUG = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 
@@ -86,7 +96,8 @@ export function normalizeIdentifier(kind: IdKind, raw: string): Identifier | nul
 // under the extension's own card timeout (`CARD_TIMEOUT_MS`, 8s), so the client stops
 // aborting first and the user sees the real cause instead of "could not reach Fundable".
 // A degraded cache still breaks the inequality: the route makes up to five sequential
-// Upstash round trips before the ladder and one after, each up to `UPSTASH_TIMEOUT_MS`.
+// Upstash round trips before the ladder and up to four after — the card write, `recordMiss`
+// on a miss, and the settle's INCRBYFLOAT and EXPIRE — each up to `UPSTASH_TIMEOUT_MS`.
 // Closing that gap end to end means raising the client timeout, which lives in extension/.
 const UPSTREAM_TIMEOUT_MS = 5000;
 
@@ -164,11 +175,13 @@ function toCard(c: any, investors: any[]): Card {
  * on the company lookup, is a genuine miss; a `402`/`429` on either of those two throws and
  * must not be cached as one. The investors leg never throws — see below.
  *
- * Whatever the ladder burned before a throw rides out on `UpstreamError.credits`, so the
- * daily ceiling can bill the failure paths that waste the most money.
+ * Whatever the ladder burned before a throw rides out on the thrown error — read it with
+ * `creditsBurned` — so the daily ceiling can bill the failure paths that waste the most money.
  *
- * `degraded` says the returned card is missing investors because that leg failed, not
- * because the company has none — the caller must not cache it as long as a clean one.
+ * `degraded` says the returned card is missing investors because that leg failed in a way a
+ * retry could clear, so the caller must not cache it as long as a clean one. A `404` there
+ * is not one of those: the deal genuinely has no investor record, on this call and every
+ * later one.
  */
 export async function fetchCard(
   id: Identifier,
@@ -205,17 +218,20 @@ export async function fetchCard(
         // The card is already bought and paid for by the two legs above, and one without
         // investors is still usable — so no failure of this optional leg may throw it away.
         // Bill the leg anyway: over-counting is the safe direction for a spend ceiling.
-        // A 402 here is the account running out of credits: log it or that signal is lost.
-        console.error('investors leg failed', e instanceof Error ? e.message : e);
+        // A 404 is the expected "no investor record", not a failure worth logging or retrying;
+        // a 402 here is the account running out of credits, and losing that signal is costly.
         credits += 1;
-        degraded = true;
+        if (!(e instanceof UpstreamError && e.status === 404)) {
+          console.error('investors leg failed', e instanceof Error ? e.message : e);
+          degraded = true;
+        }
       }
     }
 
     // Search row first: the detail response wins on every shared field but has no `website`.
     return { found: true, card: toCard({ ...match, ...company }, investors), credits, degraded };
   } catch (e) {
-    if (e instanceof UpstreamError) e.credits = credits;
+    if (e instanceof Error) (e as Error & { credits?: number }).credits = credits;
     throw e;
   }
 }
