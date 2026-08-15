@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# The three suites live on branches that have not merged yet, so every step
+# checks for its own files first. A branch carrying one suite goes green on
+# that one; a branch carrying none goes green too — absent is not failed.
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+
+      - name: extension/resolver.test.js
+        run: |
+          if [ -f extension/resolver.test.js ]; then
+            node extension/resolver.test.js
+          else
+            echo "not on this branch — skipping"
+          fi
+
+      - name: test/extension.test.js
+        run: |
+          if [ -f test/extension.test.js ]; then
+            npm ci
+            # Pass the file, never the directory: `node --test test/` fails on 22.14.
+            node --test test/extension.test.js
+          else
+            echo "not on this branch — skipping"
+          fi
+
+      - name: proxy
+        run: |
+          if [ -f proxy/package-lock.json ]; then
+            cd proxy && npm ci && npm test
+          else
+            echo "not on this branch — skipping"
+          fi
