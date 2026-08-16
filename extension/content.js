@@ -44,10 +44,16 @@ function money(value, currency = 'USD') {
   }
 }
 
-const count = (value) =>
-  typeof value === 'number' && isFinite(value)
+// Fundable sends num_employees as a bucket string ("501-1000"), not a number,
+// while the other counts are numbers. A string is already display-ready, so it
+// passes through rather than being dropped — this tile rendered for nobody until
+// live data showed the fixture's plain 1200 was not the shape the API returns.
+const count = (value) => {
+  if (typeof value === 'string') return value.trim() || null;
+  return typeof value === 'number' && isFinite(value)
     ? new Intl.NumberFormat('en-US').format(value)
     : null;
+};
 
 function when(value) {
   if (!value) return null;

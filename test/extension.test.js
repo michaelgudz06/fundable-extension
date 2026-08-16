@@ -423,7 +423,7 @@ const FULL = {
     total_raised: 900_000_000,
     num_funding_rounds: 9,
     num_investors: 21,
-    num_employees: 1200,
+    num_employees: '501-1000', // a bucket string, which is what the API really sends
     latest_valuation_usd: 4_000_000_000,
     latest_valuation_date: '2021-05-03',
   },
@@ -476,7 +476,22 @@ test('tiles render only the stats that have values', () => {
     'Employees',
   ]);
   const values = [...render(FULL).querySelectorAll('.fx-tile-value')].map((t) => t.textContent);
-  assert.deepEqual(values, ['$900M', '$610M', '$4B', '9', '21', '1,200']);
+  assert.deepEqual(values, ['$900M', '$610M', '$4B', '9', '21', '501-1000']);
+});
+
+// Every real company returns num_employees as a bucket string. A numeric-only
+// count() dropped the tile silently in production while the fixture's plain
+// number kept the suite green, so both shapes are pinned here.
+test('a headcount bucket renders, and a numeric count is still formatted', () => {
+  const bucket = (employees) => {
+    const card = { ...FULL, stats: { ...FULL.stats, num_employees: employees } };
+    const tiles = [...render(card).querySelectorAll('.fx-tile')];
+    return tiles.find((t) => t.querySelector('.fx-tile-label').textContent === 'Employees');
+  };
+  assert.equal(bucket('5001-10000').querySelector('.fx-tile-value').textContent, '5001-10000');
+  assert.equal(bucket(1200).querySelector('.fx-tile-value').textContent, '1,200');
+  assert.equal(bucket('   '), undefined, 'a blank bucket hides the tile');
+  assert.equal(bucket(null), undefined, 'a missing headcount hides the tile');
 });
 
 test('the round block names the type, amount, date and source', () => {
