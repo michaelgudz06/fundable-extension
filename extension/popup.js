@@ -25,14 +25,19 @@ const ERRORS = {
   network: 'Could not reach Fundable.',
 };
 
+// "Open on…" destinations. Fundable is one of them — its own profile is the
+// card's home base — so the aggregators it competes with (Crunchbase, PitchBook)
+// and Facebook were dropped rather than sending people off to a rival's page.
 const CHIPS = [
   ['website', 'Website'],
   ['linkedin', 'LinkedIn'],
   ['twitter', 'Twitter'],
-  ['facebook', 'Facebook'],
-  ['crunchbase', 'Crunchbase'],
-  ['pitchbook', 'PitchBook'],
+  ['fundable', 'Fundable'],
 ];
+
+// Investor rows shown before the "Show N more" button. Leads sort first, so the
+// preview is the ones that matter; the rest are one click away.
+const INVESTOR_PREVIEW = 5;
 
 // --- formatting -------------------------------------------------------------
 
@@ -127,6 +132,27 @@ function logoImg(className, src, alt) {
 // Every section returns null when it has nothing to show, so missing data hides
 // its element rather than rendering an empty box.
 
+// This company's public Fundable profile. Used by the Fundable chip and the
+// brand mark; null when the card has no permalink, which drops both.
+function fundableUrl(card) {
+  return card.guru_permalink
+    ? `https://www.tryfundable.ai/company/${encodeURIComponent(card.guru_permalink)}`
+    : null;
+}
+
+// Fundable brand mark, top-right of the header — the bundled toolbar icon, so
+// it costs no network request. Links to the company's Fundable page when there
+// is one, otherwise it's just the stamp.
+function brandMark(card) {
+  const href = fundableUrl(card);
+  const node = (href && link('fx-brand', href, null)) || el('div', 'fx-brand');
+  const img = el('img', 'fx-brand-logo');
+  img.src = 'icons/icon128.png';
+  img.alt = 'Fundable';
+  node.append(img);
+  return node;
+}
+
 function header(card) {
   const node = el('div', 'fx-header');
   const logo = logoImg('fx-logo', card.logo, card.name);
@@ -134,12 +160,14 @@ function header(card) {
   if (card.name) node.append(el('div', 'fx-name', card.name));
   const meta = [card.region, card.ipo_status && pretty(card.ipo_status)].filter(Boolean).join(' · ');
   if (meta) node.append(el('div', 'fx-meta', meta));
+  if (card.name) node.append(brandMark(card));
   return node.childNodes.length ? node : null;
 }
 
 function chips(card) {
   const links = { ...card.links };
   links.website ??= card.website;
+  links.fundable = fundableUrl(card);
   const nodes = CHIPS.map(([key, label]) => link('fx-chip', links[key], label)).filter(Boolean);
   if (!nodes.length) return null;
   const row = el('div', 'fx-chips');
@@ -226,25 +254,34 @@ function investors(card) {
     return wrap;
   }
 
-  for (const investor of list) {
+  const rows = list.map((investor) => {
     const row = el('div', 'fx-investor');
     const logo = logoImg('fx-investor-logo', investor.logo, investor.name);
     if (logo) row.append(logo);
     row.append(el('span', 'fx-investor-name', investor.name));
     if (investor.lead_investor) row.append(el('span', 'fx-lead-badge', 'Lead'));
-    wrap.append(row);
+    return row;
+  });
+
+  wrap.append(...rows.slice(0, INVESTOR_PREVIEW));
+
+  // A long list (Stripe ships 16) turns the card into a scroll. Show the first
+  // few — leads already sort first — and hold the rest behind one button that
+  // reveals them in place; the count sets the expectation before the click.
+  const rest = rows.slice(INVESTOR_PREVIEW);
+  if (rest.length) {
+    const more = el('button', 'fx-more', `Show ${rest.length} more`);
+    more.type = 'button';
+    more.addEventListener('click', () => {
+      more.replaceWith(...rest);
+    });
+    wrap.append(more);
   }
   return wrap;
 }
 
-function footer(card) {
-  if (!card.guru_permalink) return null;
-  const href = `https://www.tryfundable.ai/company/${encodeURIComponent(card.guru_permalink)}`;
-  return link('fx-footer', href, 'View on Fundable');
-}
-
 export function renderCard(card) {
-  return [header, chips, tiles, round, investors, footer]
+  return [header, chips, tiles, round, investors]
     .map((section) => section(card))
     .filter(Boolean);
 }

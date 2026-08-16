@@ -74,7 +74,11 @@
 
 body {
   width: 360px;
-  background: var(--fx-surface);
+  /* Neutral backdrop so the white card reads as a rounded card floating on it,
+     not a full-bleed rectangle clipped by the popup window. The 8px gutter is
+     what makes the rounded corners visible on all four sides. */
+  background: var(--fx-fill);
+  padding: 8px;
   font-family: 'PP Mori', Helvetica, Arial, sans-serif;
   font-size: 13px;
   line-height: 1.45;
@@ -92,6 +96,9 @@ a {
 .fx-panel {
   display: block;
   padding: 16px;
+  background: var(--fx-surface);
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 6px 20px rgba(16, 24, 40, 0.06);
 }
 
 /* Header — logo in column 1 spanning both text rows, name and meta stacked in
@@ -104,9 +111,26 @@ a {
 
 .fx-header {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto;
   gap: 2px 0;
   align-items: center;
+}
+
+/* Fundable brand mark, pinned to the top-right corner across both text rows.
+   The bundled icon already carries its own rounded white ground, so it just
+   needs sizing and a top alignment. */
+.fx-brand {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  align-self: start;
+  display: inline-flex;
+  margin-left: 8px;
+}
+
+.fx-brand-logo {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
 }
 
 /* Rounded square, not a circle: a circle reads as a person's avatar and crops
@@ -174,8 +198,8 @@ a {
 /* Two dividers, not four. The card has three zones — identity, stats, and the
    funding story — so only the tiles and the round rule a line above themselves.
    The investor list belongs to the round (one story, so grouped by whitespace,
-   not split by a line) and the footer link just floats under the card. Four
-   full-width rules turned the card into a stack of slabs; this is the fix. */
+   not split by a line). Four full-width rules turned the card into a stack of
+   slabs; this is the fix. */
 .fx-tiles,
 .fx-round {
   margin-top: 16px;
@@ -323,14 +347,21 @@ a {
   line-height: 14px;
 }
 
-.fx-footer {
-  margin-top: 18px;
-  display: block;
+/* "Show N more" — a quiet text button, not a filled control, so it recedes into
+   the list until wanted. Sits as a flex item in .fx-investors, so the column's
+   8px gap already spaces it off the last row. */
+.fx-more {
+  align-self: flex-start;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
   font-size: 12px;
   color: var(--fx-ink);
+  cursor: pointer;
 }
 
-.fx-footer:hover {
+.fx-more:hover {
   text-decoration: underline;
 }
 

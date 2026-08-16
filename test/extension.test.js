@@ -403,18 +403,21 @@ const FULL = {
 
 test('a full card renders every section', () => {
   const node = render(FULL);
-  for (const cls of ['fx-header', 'fx-chips', 'fx-tiles', 'fx-round', 'fx-investors', 'fx-footer']) {
+  for (const cls of ['fx-header', 'fx-chips', 'fx-tiles', 'fx-round', 'fx-investors']) {
     assert.ok(node.querySelector(`.${cls}`), `missing .${cls}`);
   }
   assert.equal(node.querySelector('.fx-name').textContent, 'Wealthsimple');
   assert.equal(node.querySelector('.fx-meta').textContent, 'Toronto, Canada · Private');
   assert.equal(node.querySelector('.fx-logo').getAttribute('src'), FULL.logo);
-  assert.equal(node.querySelector('.fx-footer').href, 'https://www.tryfundable.ai/company/wealthsimple');
+  // The top-right brand mark links to this company's own Fundable page.
+  assert.equal(node.querySelector('.fx-brand').href, 'https://www.tryfundable.ai/company/wealthsimple');
 });
 
+// FULL has a website, a linkedin and a guru_permalink but null twitter, so the
+// Fundable chip (built from the permalink) stands in for the dropped Crunchbase.
 test('only non-null link chips render', () => {
   const labels = [...render(FULL).querySelectorAll('.fx-chip')].map((c) => c.textContent);
-  assert.deepEqual(labels, ['Website', 'LinkedIn', 'Crunchbase']);
+  assert.deepEqual(labels, ['Website', 'LinkedIn', 'Fundable']);
 });
 
 test('links open in a new tab without leaking the referrer window', () => {
@@ -504,10 +507,23 @@ test('the investors section is headed in both the list and the note state', () =
   assert.equal(section.querySelector('.fx-investor'), null, 'no rows when there are no names');
 });
 
+// A long list previews the first few and holds the rest behind one button that
+// reveals them in place. FULL has only two investors, so this needs its own card.
+test('a long investor list previews the first few behind a Show more button', () => {
+  const many = Array.from({ length: 7 }, (_, i) => ({ name: `Fund ${i + 1}` }));
+  const section = render({ ...FULL, investors: many }).querySelector('.fx-investors');
+  assert.equal(section.querySelectorAll('.fx-investor').length, 5, 'only the preview shows first');
+  const more = section.querySelector('.fx-more');
+  assert.equal(more.textContent, 'Show 2 more');
+  more.click();
+  assert.equal(section.querySelectorAll('.fx-investor').length, 7, 'the rest reveal in place');
+  assert.equal(section.querySelector('.fx-more'), null, 'the button is gone once used');
+});
+
 test('every section disappears when its data is missing', () => {
   const node = render({ name: 'Ghost' });
   assert.equal(node.querySelector('.fx-name').textContent, 'Ghost');
-  for (const cls of ['fx-logo', 'fx-meta', 'fx-chips', 'fx-tiles', 'fx-round', 'fx-investors', 'fx-footer']) {
+  for (const cls of ['fx-logo', 'fx-meta', 'fx-chips', 'fx-tiles', 'fx-round', 'fx-investors']) {
     assert.equal(node.querySelector(`.${cls}`), null, `.${cls} should not render`);
   }
 });
@@ -594,7 +610,9 @@ test('unparseable dates and currencies are dropped, not rendered raw', () => {
 
 test('card text is set as text, so a hostile name cannot inject markup', () => {
   const node = render({ name: '<img src=x onerror=alert(1)>' });
-  assert.equal(node.querySelector('img'), null);
+  // Scoped to the name: the header also holds the bundled brand <img>, which is
+  // ours, not injected. A hostile name must never become a node under .fx-name.
+  assert.equal(node.querySelector('.fx-name img'), null);
   assert.equal(node.querySelector('.fx-name').textContent, '<img src=x onerror=alert(1)>');
 });
 
