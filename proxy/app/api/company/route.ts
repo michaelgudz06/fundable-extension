@@ -7,7 +7,10 @@ const CARD_TTL = 86400; // 24h, hits and misses alike
 // gets the hour the logo route gives its fallback rather than being pinned for a day.
 const DEGRADED_CARD_TTL = 3600;
 const CREDIT_TTL = 172800;
-const RESERVE = 2.1; // the priciest ladder: search 0.1 + company 1 + investors 1
+// The priciest ladder: search 0.1 + the slug kinds' verified name retry 0.1 + company 1
+// + investors 1. Domain lookups never pay the retry, so they over-reserve by 0.1 until
+// the settle below reconciles them.
+const RESERVE = 2.2;
 
 function corsHeaders(req: Request): Record<string, string> | null {
   const origin = req.headers.get('origin');

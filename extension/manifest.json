@@ -9,17 +9,15 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src https://fundable-extension-api.vercel.app; img-src 'self' data:; font-src https://www.tryfundable.ai; style-src 'self'"
+  },
+  "permissions": ["activeTab"],
   "host_permissions": [
     "https://fundable-extension-api.vercel.app/*"
   ],
-  "content_scripts": [
-    {
-      "matches": ["https://*/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": {
+    "default_popup": "popup.html",
     "default_title": "Fundable"
   },
   "icons": {

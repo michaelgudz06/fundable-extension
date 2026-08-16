@@ -1,13 +1,14 @@
 # Fundable Chrome Extension
 
-You're on a company's website, LinkedIn, or Crunchbase page. You click the pill and a
-panel tells you who they are and what they raised.
+You're on a company's website, LinkedIn, or Crunchbase page. You click the Fundable icon
+in the toolbar and a popup tells you who they are and what they raised.
 
 ```
 extension/        MV3, plain JS, no build step
   manifest.json
   background.js   every network call in the extension
-  content.js      pill + Shadow DOM panel, zero network calls
+  popup.html      the popup shell
+  popup.js        card rendering, zero network calls
   resolver.js     URL -> identifier, plus the deny list
   panel.css       Fundable design tokens
   icons/
@@ -15,64 +16,60 @@ proxy/            Next.js on Vercel — holds the Fundable API key
 test/             node --test
 ```
 
+There is no content script and nothing is injected into any web page. Earlier versions
+put a pill in the top-right corner of every https page; that is gone.
+
 ## The one hard requirement
 
-**Every `fetch` happens in `background.js`. The content script makes none, ever.**
+**Every `fetch` happens in `background.js`. The popup makes none, ever.**
 
-Requests issued from a content script appear in the inspected page's DevTools Network
-tab. Requests issued from a service worker do not. Someone opening DevTools on LinkedIn
-with this extension active should see nothing at all — no card lookup, no logos, no
-fonts, no telemetry.
+This started as a privacy rule: requests issued from a content script appear in the
+inspected page's DevTools Network tab, and requests issued from a service worker do not.
+The content script is gone, so the leak is gone with it — a popup is an extension page and
+its requests are invisible to every web page. The rule stays anyway, because one file
+owning the network is one place to audit, one place the proxy origin is named, and one
+place `host_permissions` has to match.
 
-Logos are the easy place to leak one. `background.js` fetches `/api/logo?domain=` itself
-and hands the panel a `data:` URL, because a bare `<img src="https://…">` in the panel
-would be a page-visible request.
-
-`test/extension.test.js` fails the build if `content.js` ever grows one — `fetch`,
-`XMLHttpRequest`, a remote `src`, a remote CSS `url()`, and the rest of the `FORBIDDEN`
-list there. If that test goes red, move the call into the worker — don't loosen the test.
+`background.js` fetches `/api/logo?domain=` itself and hands the popup a `data:` URL, so
+the proxy origin never appears in the popup's markup either.
 
 The API key itself never reaches the extension: it lives in Vercel env vars, and the
 proxy returns only trimmed card JSON.
 
 ## How the two halves talk
 
-`content.js` sends messages; `background.js` answers.
+`popup.js` sends messages; `background.js` answers.
 
 ```js
-// on load, after every same-document navigation, and again on panel open —
-// LinkedIn and Crunchbase are SPAs, so the URL is re-resolved every time
-{ type: 'init', url }        -> { identifier: {kind, value} | null, css }
+// once per popup open, against the active tab's URL (activeTab grants access,
+// because opening the popup is a user invocation)
+{ type: 'init', url }          -> { identifier: {kind, value} | null }
 
 { type: 'lookup', identifier } -> { found: true, card }
                                 | { found: false }
                                 | { error: 'rate_limited' | 'unavailable' | 'network' }
-
-// once per document, however many times the pill is rebuilt — see "PP Mori" below
-{ type: 'fonts' }            -> [{ weight, base64 }, …]
 ```
 
-`identifier: null` means don't show a card here — deny-listed or unrecognised.
-`init` also carries `panel.css` as text, since the content script can't read a packaged
-file without fetching it. The panel adopts it into its shadow root.
+`identifier: null` means there's no card to show here — deny-listed or unrecognised. The
+popup renders "We're working on adding this company".
+
+A popup is a fresh document each time it opens, so there is no SPA navigation to follow
+and no stale-response race to guard: one open, one lookup, then it's gone.
 
 ## PP Mori
 
-**An `@font-face` declared inside a shadow root is ignored by Chrome — the file is never
-fetched.** So `panel.css` cannot load PP Mori on its own; the face has to be registered on
-the document. `content.js` does that in `registerFonts()`.
-
-Registering a face that points at a URL would make the *page* fetch the font, in full view
-of its Network tab — the one thing this extension exists to avoid. So the worker fetches
-the `.otf` bytes and the content script builds a `FontFace` from binary data, which loads
-no URL at all. It also sidesteps the host page's `font-src` CSP, since nothing is fetched.
+`panel.css` loads PP Mori with a plain `@font-face` against Fundable's CDN. That is fine
+here — the popup is an extension page, so the font request comes from
+`chrome-extension://` and touches no web page. (Inside the old shadow-root panel it was
+not: Chrome ignores an `@font-face` declared in a shadow root outright, and registering
+one on the host document would have made the *page* fetch the file.)
 
 - Two weights exist, **400 and 600**, shipped as `.otf` (`format('opentype')`).
-- The family is registered as **`PP Mori`** — `panel.css` must ask for that exact name.
-- The URLs are hardcoded in `FONTS` at the top of `background.js` and their hashes rotate
-  on every Fundable deploy. When they go stale the fetch 404s and the card falls back to
-  Helvetica/Arial. That fallback is load-bearing: nothing in this path may throw, block, or
-  blank the render. The comment above `FONTS` has the two commands that find the new hashes.
+- The family is **`PP Mori`**.
+- The hashed URLs are at the top of `panel.css` and rotate on every Fundable deploy. When
+  they go stale the fetch 404s and the card falls back to Helvetica/Arial. That fallback
+  is load-bearing — the type scale is set so the card still reads without PP Mori. The
+  comment above the `@font-face` rules has the two commands that find the new hashes.
 - The font is hotlinked rather than bundled because it's licensed to Fundable, not to this
   extension. No `host_permissions` entry is needed — Vercel serves `/_next/static` with
   `access-control-allow-origin: *`.
@@ -119,7 +116,6 @@ orphans an existing Web Store listing.
 
 ## Known limits
 
-- The panel refetches when reopened. Cheap: the proxy caches cards in Redis for 24h.
-- If a host page's CSP blocks `data:` images, logos are hidden and the rest still renders.
+- The popup refetches every time it opens. Cheap: the proxy caches cards in Redis for 24h.
 - Amounts are formatted as plain USD. If the proxy ever switches to millions, the
-  formatter in `content.js` has to switch with it.
+  formatter in `popup.js` has to switch with it.

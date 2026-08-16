@@ -2,19 +2,19 @@
 
 This file is the project's committed home for project-intrinsic agent knowledge: build, test, release, architecture, and sharp-edge notes that should travel with the code.
 
-- **Never add a network call to `extension/content.js`.** Content-script requests show up
-  in the inspected page's DevTools Network tab; service-worker requests do not, and hiding
-  them is the reason this extension is built the way it is. Every `fetch` — card data,
-  logos, anything — belongs in `extension/background.js`. `test/extension.test.js` greps
-  for violations; if it goes red, move the call, don't loosen the test. README.md § "The
-  one hard requirement" has the full rationale.
-- **The same rule covers stylesheets.** A stylesheet injected into the panel's shadow root
-  is still a page stylesheet: any reference in it — `url()`, `@import`, or the bare quoted
-  URL an `image-set()` carries — is fetched BY THE PAGE and lands in that Network tab. So
-  `extension/panel.css` may point only at what fetches nothing: `data:` URIs and
-  `#fragment`s. `sanitizeCss()` in `extension/background.js` strips the rest at the
-  boundary and warns when it does. A `@font-face` built from bytes the worker fetched is the one exempt path —
-  a `FontFace` constructed from binary data loads no URL.
+- **There is no content script.** The UI is the toolbar popup (`extension/popup.html` +
+  `popup.js`), opened by clicking the action; `activeTab` gives it the current tab's URL.
+  Nothing is injected into any web page, so nothing this extension does can appear in an
+  inspected page's DevTools Network tab. Do not reintroduce `content_scripts` — the pill
+  is exactly what the user asked to have removed.
+- **Every `fetch` still belongs in `extension/background.js`.** The popup asks the worker
+  over `chrome.runtime` messaging and gets logos back as `data:` URLs. This is now one
+  boundary rather than a privacy rule; keep it, because splitting network ownership across
+  two files is how it rots. README.md § "The one hard requirement" has the history.
+- `extension/panel.css` is an ordinary extension-page stylesheet loaded by `<link>`, so it
+  may reference remote assets — PP Mori is a plain `@font-face` against Fundable's CDN.
+  Helvetica/Arial fallback is load-bearing: the hashed font filenames rotate on every
+  Fundable deploy and nothing may break when they 404.
 - The extension ID is pinned by `key` in `extension/manifest.json` and the proxy's CORS
   allowlist depends on it. Do not regenerate it. See README.md § "The pinned extension ID".
 - `npm install` / `npm test` at the repo root are for the extension only (jsdom for render

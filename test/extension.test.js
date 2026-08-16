@@ -15,32 +15,39 @@ let route = () => {
 let listener;
 globalThis.chrome = {
   runtime: {
+    id: 'test-extension-id',
     getURL: (name) => `chrome-extension://test/${name}`,
     onMessage: { addListener: (fn) => (listener = fn) },
   },
 };
 globalThis.fetch = async (url, options) => route(url, options);
 
-// Every reference a stylesheet makes, read with the worker's own extractor and
-// judged by its own rule rather than a second copy of either: hand-copied
-// regexes drifted into the identical blind spot twice. A stylesheet is a
-// declarative artifact this repo owns, and what its references point at is the
-// contract — anything the page would have to fetch is a request it issues on our
-// behalf.
-const { cssReferences: urlTargets, sanitizeCss, FETCHES_NOTHING } = await import(
-  '../extension/background.js'
-);
+await import('../extension/background.js');
+
+// The popup is a document, so jsdom has to be standing before popup.js loads
+// too. Its auto-run is guarded on chrome.tabs, which nothing has defined yet.
+const dom = new JSDOM('<!doctype html>');
+globalThis.document = dom.window.document;
+const popup = await import('../extension/popup.js');
 
 // ---------------------------------------------------------------------------
-// The one hard requirement: content.js never talks to the network.
+// The one hard requirement, re-expressed for the popup.
 //
-// A request issued from a content script shows up in the inspected page's
-// DevTools Network tab and gives the whole thing away. If this test fails, the
-// fix is to move the call into background.js — never to loosen the test.
+// It used to be a privacy rule: a request issued from a content script shows up
+// in the inspected page's DevTools Network tab and gives the whole thing away.
+// The content script is gone, so that leak is gone with it — a popup is an
+// extension page and nothing it fetches is visible to any web page. The rule
+// stays anyway, one rung weaker but still absolute: popup.js builds no remote
+// URL and issues no request. Card data and logos arrive over chrome.runtime
+// messaging (logos already inlined as data: URLs), and the stylesheet arrives
+// through <link> from the extension's own package. One file owning the network
+// is one place to audit, one place the proxy origin is named, and one place
+// host_permissions has to match. If this fails, the fix is to move the call into
+// background.js — never to loosen the test.
 // ---------------------------------------------------------------------------
 
 // Only whole-line comments are stripped, so a violation can't hide behind one.
-const contentCode = read('content.js').replace(/^\s*\/\/.*$/gm, '');
+const popupCode = read('popup.js').replace(/^\s*\/\/.*$/gm, '');
 
 const FORBIDDEN = [
   [/\bfetch\s*\(/, 'fetch()'],
@@ -54,37 +61,113 @@ const FORBIDDEN = [
   [/\bsrc\s*=\s*[`'"]\s*https?:/i, 'a remote src= URL'],
   [/<img[^>]*\bsrc\s*=\s*[`'"]?\s*https?:/i, 'a remote <img src>'],
   [/createElement\(\s*[`'"]link[`'"]/, "createElement('link') — a remote stylesheet"],
-  [/url\(\s*[`'"]?\s*https?:/i, 'a remote CSS url() — fonts and images must arrive as bytes'],
+  [/url\(\s*[`'"]?\s*https?:/i, 'a remote CSS url() — assets must arrive as data: URLs'],
 ];
 
-test('content.js makes no page-visible network calls', () => {
+test('popup.js issues no network calls of its own', () => {
   for (const [pattern, what] of FORBIDDEN) {
     assert.equal(
-      pattern.test(contentCode),
+      pattern.test(popupCode),
       false,
-      `content.js uses ${what}; every network call belongs in background.js`,
+      `popup.js uses ${what}; every network call belongs in background.js`,
     );
   }
 });
 
-// panel.css belongs to another crewmate and is not in this worktree yet. When it
-// lands, its url() references have to obey the same rule content.js does.
-test('panel.css references nothing the page would have to fetch', { skip: !existsSync(path('panel.css')) }, () => {
-  for (const target of urlTargets(read('panel.css'))) {
-    assert.match(target, FETCHES_NOTHING, `panel.css points at ${target}; the page would fetch it`);
+// ---------------------------------------------------------------------------
+// panel.css is no longer page CSS. It is loaded by <link> into an extension
+// page, so whatever it references is fetched from chrome-extension:// and no web
+// page's Network tab can see it. The old rule — "a data: URI or nothing, ever" —
+// is therefore genuinely relaxed here, and this test is that relaxation written
+// down rather than quietly deleted.
+//
+// What replaces it is still narrower than "anything goes": a reference must be
+// inert (data:, a fragment) or Fundable's own CDN, which is where the documented
+// PP Mori @font-face points. A third-party origin in this file would tell that
+// third party who opens the popup and when, and a typo'd path ships broken.
+//
+// One extractor, in one place: nothing in the extension parses CSS any more, so
+// there is no second copy for this one to drift away from.
+// ---------------------------------------------------------------------------
+
+const FONT_ORIGIN = 'https://www.tryfundable.ai/_next/static/';
+
+// url() in any quoting, plus any quoted absolute or protocol-relative URL —
+// which is how image-set(), @import and a custom property each carry one.
+// Comments go first: nothing fetches a comment.
+const rules = (css) => css.replace(/\/\*[\s\S]*?\*\//g, '');
+
+const cssReferences = (css) =>
+  [
+    ...rules(css).matchAll(
+      /url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)|["']((?:https?:)?\/\/[^"']*)["']/g,
+    ),
+  ].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4]);
+
+test('panel.css fetches only inert data or Fundable’s own CDN', () => {
+  const refs = cssReferences(read('panel.css'));
+  assert.ok(refs.length, 'the extractor matched nothing; a guard that reads nothing guards nothing');
+  for (const ref of refs) {
+    if (/^(data:|#)/.test(ref)) continue;
+    assert.ok(
+      ref.startsWith(FONT_ORIGIN),
+      `panel.css points at ${ref}; the popup would fetch it from a third party`,
+    );
   }
 });
 
-test('manifest keeps network permission scoped and the extension ID pinned', () => {
+// The hashed font filenames rotate on every Fundable deploy, so a 404 is the
+// normal steady state, not an edge case. What has to survive it is the fallback.
+test('PP Mori is declared for both weights, behind a fallback that survives a 404', () => {
+  // Comments off first: the header above the rules documents @font-face and the
+  // curl commands that refresh the hashes, and prose is not a declaration.
+  const css = rules(read('panel.css'));
+  // Scoped to the @font-face blocks: `font-weight: 600` also styles half the
+  // card, and counting those would pass whatever the faces actually declare.
+  const faces = [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map((m) => m[1]);
+  assert.equal(faces.length, 2, 'PP Mori ships as 400 and 600');
+  assert.deepEqual(faces.map((f) => f.match(/font-weight:\s*(\d+)/)?.[1]), ['400', '600']);
+  for (const face of faces) assert.match(face, /font-family:\s*'PP Mori'/);
+  assert.match(
+    css,
+    /font-family:\s*'PP Mori',\s*Helvetica,\s*Arial,\s*sans-serif/,
+    'the Helvetica/Arial fallback is load-bearing — the filenames go stale',
+  );
+});
+
+test('manifest opens a popup, injects nothing, and keeps the extension ID pinned', () => {
   assert.ok(manifest.key, 'manifest needs a pinned key for a stable extension ID');
   assert.equal(manifest.background.type, 'module');
-  assert.deepEqual(manifest.content_scripts[0].js, ['content.js']);
-  // The floor is the highest API the code uses: AbortSignal.timeout in the
-  // worker's fetches (Chrome 103), above the Navigation API's 102.
+  assert.ok(
+    !('content_scripts' in manifest),
+    'nothing is injected into any page — the pill is what the user asked to remove',
+  );
+  assert.equal(manifest.action.default_popup, 'popup.html');
+  assert.ok(existsSync(path('popup.html')), 'the declared popup has to exist');
+  assert.deepEqual(
+    manifest.permissions,
+    ['activeTab'],
+    'the popup reads the active tab because clicking the action is a user invocation',
+  );
+  // The floor is the oldest Chrome that can *run* the extension: AbortSignal
+  // .timeout, in the worker's fetches, is the newest API anything depends on
+  // (Chrome 103). panel.css also uses color-mix() (Chrome 111), which is not a
+  // dependency — below 111 the lead badge simply loses its tint and keeps its
+  // green label, so the floor stays where the JS puts it.
   assert.equal(manifest.minimum_chrome_version, '103');
   for (const host of manifest.host_permissions) {
     assert.doesNotMatch(host, /<all_urls>|\*:\/\/\*\//, 'host_permissions must name the proxy only');
   }
+});
+
+// The shell is the entry point and nothing else covers it: a renamed file or a
+// dropped type="module" would leave a permanently blank popup with a green suite.
+test('popup.html loads the packaged stylesheet and the module', () => {
+  const html = read('popup.html');
+  assert.match(html, /<link rel="stylesheet" href="panel\.css"/);
+  assert.match(html, /<script type="module" src="popup\.js"/);
+  assert.match(html, /class="fx-panel"/, 'popup.js renders into .fx-panel');
+  for (const file of ['panel.css', 'popup.js']) assert.ok(existsSync(path(file)));
 });
 
 // ---------------------------------------------------------------------------
@@ -111,146 +194,37 @@ const bytes = (contentType, ...octets) => ({
 
 // Also asserts the listener returns true, which is what keeps sendResponse
 // alive across the await in MV3.
-const ask = (message) =>
+// The sender is this extension itself — the worker drops anything else, so the
+// stub has to model a real one rather than pass null.
+const ask = (message, sender = { id: chrome.runtime.id }) =>
   new Promise((resolve) => {
-    assert.equal(listener(message, null, resolve), true, 'listener must return true');
+    assert.equal(listener(message, sender, resolve), true, 'listener must return true');
   });
 
-// An inline SVG is the shape panel.css is most likely to reach for, since data:
-// is the only scheme it is allowed — and it carries a quoted http(s) namespace
-// that loads nothing. Eating it would blank the icon silently.
-const SVG_URI =
-  "data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e...";
-const SVG_RULE = `.fx-icon{background-image:url("${SVG_URI}")}`;
-
-// What survives is decided by what the reference points at, not by the construct
-// carrying it and not by a list of dangerous schemes — enumerating either is how
-// this class of bug kept coming back a round at a time. The invented function is
-// the row that proves the carrier does not matter: nothing in the sanitizer has
-// ever heard of paint-thing(). The relative and protocol-relative rows are the
-// ones a scheme blocklist misses: both are page-visible requests, the first
-// against LinkedIn's own origin.
-const PNG_URI = 'data:image/png;base64,AAA';
-const INERT = [PNG_URI, SVG_URI, '#blur'];
-const FETCHED = [
-  'https://cdn.example.com/logo.png',
-  'http://cdn.example.com/logo.png',
-  '//cdn.example.com/x.png',
-  'icon.png',
-];
-
-// Each carrier lists what it can legally express: an unquoted url() token cannot
-// hold raw quotes or spaces, a single-quoted string cannot hold the inline SVG's
-// single-quoted attributes, and a bare quoted string with no scheme cannot be
-// told from prose, so those rows carry no relative path or fragment.
-const ALL = [...INERT, ...FETCHED];
-const URL_SAFE = ALL.filter((ref) => ref !== SVG_URI);
-const SCHEMED = [PNG_URI, SVG_URI, ...FETCHED.filter((ref) => ref !== 'icon.png')];
-const CARRIERS = [
-  ['url("…")', (ref) => `.a{background:url("${ref}")}`, ALL],
-  ["url('…')", (ref) => `.b{background:url('${ref}')}`, URL_SAFE],
-  ['url(…)', (ref) => `.c{background:url(${ref})}`, URL_SAFE],
-  ['image-set()', (ref) => `.d{background-image:image-set("${ref}" 1x)}`, SCHEMED],
-  ['paint-thing()', (ref) => `.e{background:paint-thing("${ref}" cover)}`, SCHEMED],
-  ['a bare quoted string', (ref) => `.f{--fx-art:"${ref}"}`, SCHEMED],
-  ['a rule below a comment', (ref) => `/* see https://wiki.example.com/panel */\n.g{background:url("${ref}")}`, ALL],
-];
-
-// A comment is never fetched by anything, so every reference inside one is left
-// alone whatever it points at — including the shapes every row above strips.
-const COMMENTS = [
-  ['a commented-out rule', (ref) => `/* .h{background:url("${ref}")} */\n.i{color:red}`, ALL],
-  ['a commented-out @import', (ref) => `/* @import "${ref}"; */\n.i{color:red}`, ALL],
-  ['a note in a comment', (ref) => `/* icons from ${ref} */\n.i{color:red}`, ALL],
-];
-
-test('what the page would fetch is stripped and named; what it would not is kept whole', () => {
-  const warnings = [];
-  const realWarn = console.warn;
-  console.warn = (message) => warnings.push(message);
-  try {
-    for (const [carrier, rule, refs] of [...CARRIERS, ...COMMENTS]) {
-      const commented = COMMENTS.some(([name]) => name === carrier);
-      for (const ref of refs) {
-        const css = rule(ref);
-        warnings.length = 0;
-        const safe = sanitizeCss(css);
-
-        if (commented || INERT.includes(ref)) {
-          assert.equal(safe, css, `${carrier} must keep ${ref} byte for byte`);
-          assert.deepEqual(warnings, [], `${carrier} warns about ${ref}, which fetches nothing`);
-        } else {
-          assert.ok(!safe.includes(ref), `${carrier} leaks ${ref}; the page would fetch it`);
-          assert.ok(
-            warnings.join('\n').includes(ref),
-            `${carrier} strips ${ref} without saying so; a silent strip is a mystery`,
-          );
-          assert.ok(
-            !warnings.join('\n').includes('wiki.example.com'),
-            `${carrier} cries wolf over a URL in a comment, which nothing fetches`,
-          );
-        }
-        assert.deepEqual(
-          urlTargets(css),
-          commented ? [] : [ref],
-          `${carrier} misreads ${ref}; the panel.css guard reads it the same way`,
-        );
-      }
-    }
-  } finally {
-    console.warn = realWarn;
-  }
+// The worker is not a lookup service for whoever can reach it. Chrome already
+// routes foreign senders to onMessageExternal, which this extension does not
+// implement, so this pins the belt as well as the braces.
+test('a message from anything but this extension is ignored outright', () => {
+  let answered = false;
+  const returned = listener(
+    { type: 'init', url: 'https://stripe.com/' },
+    { id: 'some-other-extension' },
+    () => (answered = true),
+  );
+  assert.notEqual(returned, true, 'must not hold the channel open for a foreign sender');
+  assert.equal(answered, false, 'must not answer a foreign sender');
 });
 
-// The stylesheet is injected into the panel's shadow root, which is still page
-// CSS: whatever it references, the page fetches, in full view of its Network
-// tab. Only a data: URI loads nothing. panel.css is another crewmate's file, so
-// the worker strips the rest on the way through — the memoised css promise means
-// this is the one place the round trip actually happens.
-test('init hands back the resolver verdict and a stylesheet the page cannot fetch from', async () => {
-  route = (url) => {
-    assert.equal(url, 'chrome-extension://test/panel.css');
-    return {
-      text: async () =>
-        '@import "https://cdn.example.com/reset.css";\n' +
-        // The same rule one keystroke from live, which is how a stylesheet under
-        // review actually looks. A comment fetches nothing.
-        '/* @import "https://commented.example.com/legacy.css"; */\n' +
-        '.fx-panel{background:url("https://cdn.example.com/bg.png")}\n' +
-        '.fx-logo{mask:url(/local/icon.svg)}\n' +
-        // This one hides its remote source behind an earlier argument that closes
-        // a paren of its own, which is why the strip is scoped to no construct.
-        '.fx-tile{background-image:image-set(url("data:image/png;base64,AAA") 1x, "https://cdn.example.com/x@2x.png" 2x)}\n' +
-        `${SVG_RULE}\n` +
-        // Unquoted and outside url(): nothing here understands it, which is the
-        // whole reason the survivor warning exists.
-        ':root{--fx-icons:https://survivor.example.com/sprite.svg}\n',
-    };
-  };
-  const warnings = [];
-  const realWarn = console.warn;
-  console.warn = (message) => warnings.push(message);
-  let res;
-  try {
-    res = await ask({ type: 'init', url: 'https://www.linkedin.com/company/stripe' });
-  } finally {
-    console.warn = realWarn;
-  }
-
-  assert.ok('identifier' in res, 'init must report the resolver verdict');
-  assert.deepEqual(urlTargets(res.css), [PNG_URI, SVG_URI]);
-  assert.ok(!res.css.includes('reset.css'), 'a bare @import fetches too');
-  assert.doesNotMatch(res.css, /cdn\.example\.com/, 'image-set carries a bare string, not a url()');
-  assert.match(res.css, /\.fx-logo\{mask:/, 'only the references are stripped, not the rules');
-  assert.ok(res.css.includes(SVG_RULE), 'a data: URI has to survive byte for byte, namespace and all');
-  assert.match(res.css, /commented\.example\.com/, 'a commented-out rule is not a reference');
-
-  assert.match(warnings.join('\n'), /https:\/\/cdn\.example\.com\/bg\.png/, 'a silent strip is a mystery');
-  assert.doesNotMatch(warnings.join('\n'), /commented\.example\.com/, 'nothing fetches a comment');
-  // The survivor warning is the durable half: the next construct nobody
-  // anticipated stays diagnosable instead of leaking quietly.
-  assert.match(warnings.join('\n'), /survivor\.example\.com/);
-  assert.doesNotMatch(warnings.join('\n'), /w3\.org/, 'a namespace inside a data: URI fetches nothing');
+// deepEqual on the whole answer, not just `identifier`: the popup loads its CSS
+// through <link>, so the `css` this used to carry is dead weight that must not
+// creep back. `route` still throws here, which pins that init costs no fetch.
+test('init hands back the resolver verdict, and nothing else', async () => {
+  assert.deepEqual(await ask({ type: 'init', url: 'https://www.linkedin.com/company/stripe' }), {
+    identifier: { kind: 'linkedin', value: 'https://www.linkedin.com/company/stripe' },
+  });
+  assert.deepEqual(await ask({ type: 'init', url: 'https://mail.google.com/mail/u/0' }), {
+    identifier: null,
+  });
 });
 
 const CARD = {
@@ -284,7 +258,7 @@ test('a logo that fails to load leaves the card intact', async () => {
 });
 
 // `lookup` awaits the logos before it answers, so without a deadline one stalled
-// connection leaves Promise.all pending, sendResponse uncalled, and the panel on
+// connection leaves Promise.all pending, sendResponse uncalled, and the popup on
 // "Loading…" until Chrome tears the worker down and the port dies under it.
 test('a logo that never answers cannot hold the card hostage', async () => {
   const realTimeout = AbortSignal.timeout;
@@ -337,27 +311,12 @@ test('a miss is a miss, not an error', async () => {
   }
 });
 
-test('fonts come back as bytes, and a stale filename drops just that weight', async () => {
-  const FONT_400 = 'https://www.tryfundable.ai/_next/static/media/8f65835aa057b6ed-s.p.otf';
-  let calls = 0;
-  route = (url) => {
-    calls++;
-    return url === FONT_400 ? bytes('font/otf', 79, 84, 84, 79) : body(404, null);
-  };
-  assert.deepEqual(await ask({ type: 'fonts' }), [{ weight: 400, base64: 'T1RUTw==' }]);
-
-  // Memoised: the worker fetches each face once per lifetime, not once per page.
-  const before = calls;
-  await ask({ type: 'fonts' });
-  assert.equal(calls, before);
-});
-
 // The listener has already returned true, so a handler that throws instead of
-// answering is indistinguishable from a hang: the panel stays on "Loading…"
-// until the port dies. The proxy is another crewmate's and does not exist yet,
-// so a card shaped unlike the contract is a live possibility — investors as bare
-// strings makes attachLogos throw on assignment under module strict mode.
-test('a handler that throws still answers, rather than leaving the panel loading', async () => {
+// answering is indistinguishable from a hang: the popup stays on "Loading…"
+// until the port dies. A card shaped unlike the contract is a live possibility —
+// investors as bare strings makes attachLogos throw on assignment under module
+// strict mode.
+test('a handler that throws still answers, rather than leaving the popup loading', async () => {
   route = (url) =>
     url.includes('/api/logo')
       ? bytes('image/png', 1)
@@ -366,12 +325,19 @@ test('a handler that throws still answers, rather than leaving the panel loading
   assert.deepEqual(res, { error: 'unavailable' });
 });
 
-test('failures map to the three quiet error codes', async () => {
+// The proxy sends a JSON {error: code} body on every non-ok status, so the
+// worker passes that code straight through — a 502 timeout and a 503 ceiling
+// used to both read "unavailable", which is why a bug report from the popup
+// couldn't be told apart. Only an unparseable or code-less body falls back.
+test('failures pass the proxy error code through, falling back to unavailable', async () => {
   const cases = [
-    [() => body(429, null), 'rate_limited'],
-    [() => body(500, null), 'unavailable'],
-    [() => body(402, null), 'unavailable'],
-    [() => body(200, 'bad-json'), 'unavailable'],
+    [() => body(429, { error: 'rate_limited' }), 'rate_limited'],
+    [() => body(502, { error: 'upstream_error' }), 'upstream_error'],
+    [() => body(503, { error: 'temporarily_unavailable' }), 'temporarily_unavailable'],
+    [() => body(403, { error: 'forbidden' }), 'forbidden'],
+    [() => body(500, {}), 'unavailable'], // non-ok but no code -> fallback
+    [() => body(500, null), 'unavailable'], // non-ok, no body -> fallback
+    [() => body(200, 'bad-json'), 'unavailable'], // ok but unparseable -> fallback
     [
       () => {
         throw new TypeError('Failed to fetch');
@@ -390,16 +356,9 @@ test('failures map to the three quiet error codes', async () => {
 // card -> DOM
 // ---------------------------------------------------------------------------
 
-const dom = new JSDOM('<!doctype html>');
-globalThis.document = dom.window.document;
-
-// content.js is a classic content script, so it has no exports to import. Run
-// it as a function body and take the renderers off the end.
-const panel = new Function(`${read('content.js')}\nreturn { renderCard, registerFonts, start };`)();
-
 function render(card) {
   const node = document.createElement('div');
-  node.append(...panel.renderCard(card));
+  node.append(...popup.renderCard(card));
   return node;
 }
 
@@ -507,9 +466,20 @@ test('pre and extension rounds are named as such', () => {
   assert.equal(render({ latest_deal: deal }).querySelector('.fx-round-head').textContent, 'Pre-Series A extension');
 });
 
+// Both cases of the code, because the API normalises neither and Intl accepts
+// either: pinning only 'USD' left a lowercase 'usd' through the de-dupe, and
+// Intl then canonicalised it into a second identical "$610M · $610M".
 test('a round raised in USD does not repeat itself in native currency', () => {
-  const deal = { ...FULL.latest_deal, financings: [{ size_native: 610_000_000, currency: 'USD' }] };
-  assert.equal(render({ latest_deal: deal }).querySelector('.fx-round-amount').textContent, '$610M');
+  for (const currency of ['USD', 'usd']) {
+    const deal = { ...FULL.latest_deal, financings: [{ size_native: 610_000_000, currency }] };
+    assert.equal(render({ latest_deal: deal }).querySelector('.fx-round-amount').textContent, '$610M');
+  }
+  const cad = { ...FULL.latest_deal, financings: [{ size_native: 750_000_000, currency: 'cad' }] };
+  assert.equal(
+    render({ latest_deal: cad }).querySelector('.fx-round-amount').textContent,
+    '$610M · CA$750M',
+    'a lowercase non-USD code is still a real second currency',
+  );
 });
 
 test('investors carry a lead badge only when they led', () => {
@@ -519,6 +489,19 @@ test('investors carry a lead badge only when they led', () => {
   assert.equal(rows[1].querySelector('.fx-lead-badge'), null);
   assert.equal(rows[0].querySelector('.fx-investor-logo').getAttribute('src'), FULL.investors[0].logo);
   assert.equal(rows[1].querySelector('.fx-investor-logo'), null, 'no logo, no <img>');
+});
+
+// The section carries an overline like every other block, in both states: a
+// named list, and the count-but-no-names note. The note case is the one that
+// vanished as a bug before, so it is pinned to still render — now with a header.
+test('the investors section is headed in both the list and the note state', () => {
+  assert.equal(render(FULL).querySelector('.fx-investors-head').textContent, 'Investors');
+
+  const unnamed = { ...FULL, investors: [], stats: { ...FULL.stats, num_investors: 26 } };
+  const section = render(unnamed).querySelector('.fx-investors');
+  assert.equal(section.querySelector('.fx-investors-head').textContent, 'Investors');
+  assert.match(section.querySelector('.fx-note').textContent, /doesn't name/);
+  assert.equal(section.querySelector('.fx-investor'), null, 'no rows when there are no names');
 });
 
 test('every section disappears when its data is missing', () => {
@@ -582,7 +565,7 @@ test('a month-boundary date is not shifted into the previous month', () => {
 });
 
 // The card comes from the proxy; its text is set with textContent, but an href
-// goes straight into the host page's DOM as something the reader can click.
+// goes straight into the popup's DOM as something the reader can click.
 test('a non-http href is dropped rather than made clickable', () => {
   const node = render({
     name: 'Evil Co',
@@ -609,79 +592,6 @@ test('unparseable dates and currencies are dropped, not rendered raw', () => {
   assert.equal(node.querySelector('.fx-round-amount'), null);
 });
 
-// ---------------------------------------------------------------------------
-// PP Mori. An @font-face inside a shadow root is ignored by Chrome, so the face
-// has to be registered on the document — but registering one that points at a
-// URL would make the page fetch the file, in full view of its Network tab. So
-// the worker sends bytes and the face is built from those.
-// ---------------------------------------------------------------------------
-
-const added = [];
-const built = [];
-
-function stubFontEnv(FontFaceImpl, reply) {
-  added.length = built.length = 0;
-  globalThis.FontFace = FontFaceImpl;
-  Object.defineProperty(document, 'fonts', {
-    value: { add: (font) => added.push(font) },
-    configurable: true,
-  });
-  chrome.runtime.sendMessage = async (message) => {
-    assert.deepEqual(message, { type: 'fonts' });
-    return reply;
-  };
-}
-
-class RecordingFontFace {
-  constructor(family, source, descriptors) {
-    built.push({ family, source, descriptors });
-  }
-  async load() {
-    return this;
-  }
-}
-
-test('PP Mori is registered on the document from bytes, never from a URL', async () => {
-  stubFontEnv(RecordingFontFace, [
-    { weight: 400, base64: btoa('regular-otf') },
-    { weight: 600, base64: btoa('semibold-otf') },
-  ]);
-
-  await panel.registerFonts();
-
-  assert.equal(added.length, 2);
-  assert.deepEqual(built.map((f) => f.family), ['PP Mori', 'PP Mori']);
-  assert.deepEqual(built.map((f) => f.descriptors.weight), ['400', '600']);
-  for (const font of built) {
-    assert.ok(
-      ArrayBuffer.isView(font.source),
-      'the face must be built from binary data — a string source would fetch a URL',
-    );
-  }
-  assert.equal(new TextDecoder().decode(built[0].source), 'regular-otf');
-});
-
-test('a font that will not load leaves the Helvetica fallback in place', async () => {
-  const cases = [
-    [
-      class {
-        constructor() {
-          throw new TypeError('unparseable font data');
-        }
-      },
-      [{ weight: 400, base64: btoa('junk') }],
-    ],
-    [RecordingFontFace, []], // every filename rotated out from under us
-    [RecordingFontFace, null], // worker unreachable
-    [RecordingFontFace, { error: 'unavailable' }], // worker answered with junk
-  ];
-  for (const [impl, reply] of cases) {
-    stubFontEnv(impl, reply);
-    await panel.registerFonts(); // must resolve, never reject
-    assert.equal(added.length, 0);
-  }
-});
-
 test('card text is set as text, so a hostile name cannot inject markup', () => {
   const node = render({ name: '<img src=x onerror=alert(1)>' });
   assert.equal(node.querySelector('img'), null);
@@ -689,171 +599,123 @@ test('card text is set as text, so a hostile name cannot inject markup', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SPA navigation. LinkedIn and Crunchbase route without reloading the document,
-// so the content script runs once — on /feed, where no pill belongs — and the
-// company page you click through to would never get one.
+// Opening the popup. A popup is a fresh document every time, so there is no SPA
+// navigation to follow and no stale-response race to guard — the two tests that
+// chased the pill across LinkedIn's router are gone with the pill. What is left
+// is one flow, active tab -> init -> lookup -> render, and its four endings.
+//
+// sendMessage is wired straight into the worker's real listener, so these run
+// the actual protocol rather than a second description of it.
 // ---------------------------------------------------------------------------
 
-test('the pill follows same-document navigation without ever doubling up', async () => {
-  const listeners = {};
-  globalThis.navigation = {
-    addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
+const MISS = "We're working on adding this company";
+
+function openPopup({ url = 'https://www.linkedin.com/company/stripe', reachable = true } = {}) {
+  let sent = 0;
+  chrome.tabs = { query: async () => [{ url }] };
+  chrome.runtime.sendMessage = (message) => {
+    sent++;
+    return reachable ? ask(message) : Promise.reject(new Error('Extension context invalidated'));
   };
-  globalThis.location = { href: 'https://www.linkedin.com/feed/' };
+  // Pre-filled exactly as popup.html ships it, so "replaced the loading state"
+  // is a real assertion and not a vacuous one.
+  const panel = document.createElement('div');
+  const loading = document.createElement('div');
+  loading.className = 'fx-loading';
+  panel.append(loading);
+  return { panel, done: popup.open(panel), sends: () => sent };
+}
 
-  const COMPANY = /\/company\//;
-  let fontRequests = 0;
-  chrome.runtime.sendMessage = async (message) => {
-    if (message.type === 'fonts') return fontRequests++, null;
-    assert.equal(message.type, 'init');
-    return { identifier: COMPANY.test(message.url) ? { kind: 'linkedin', value: message.url } : null, css: '' };
+test('the active tab resolves to a card, which replaces the loading state', async () => {
+  route = (url) =>
+    url.includes('/api/logo')
+      ? bytes('image/png', 1)
+      : body(200, structuredClone({ ...CARD, guru_permalink: 'wealthsimple' }));
+  const { panel, done, sends } = openPopup({ url: 'https://wealthsimple.com/en-ca' });
+  await done;
+  assert.equal(panel.querySelector('.fx-loading'), null, 'the loading state has to be replaced');
+  assert.equal(panel.querySelector('.fx-name').textContent, 'Wealthsimple');
+  assert.equal(sends(), 2, 'one init, one lookup, and that is the whole popup');
+});
+
+test('a tab the resolver denies never reaches the network', async () => {
+  route = () => {
+    throw new Error('a deny-listed page must not be looked up');
   };
+  const { panel, done, sends } = openPopup({ url: 'https://mail.google.com/mail/u/0' });
+  await done;
+  assert.equal(panel.querySelector('.fx-miss').textContent, MISS);
+  assert.equal(sends(), 1, 'no identifier, no lookup');
+});
 
-  const hosts = () => document.querySelectorAll('#fundable-extension-root');
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+test('a company Fundable has never heard of is a miss, not an error', async () => {
+  route = () => body(200, { found: false });
+  const { panel, done } = openPopup();
+  await done;
+  assert.equal(panel.querySelector('.fx-miss').textContent, MISS);
+});
 
-  // The real platform ordering, which is the whole point of this stub:
-  // `navigate` is the interception point and fires while location.href still
-  // holds the page being LEFT — only `destination.url` names the target — and
-  // `navigatesuccess` fires after the URL commits. A handler that reads
-  // location.href from `navigate` resolves the wrong page in both directions.
-  const go = async (url) => {
-    for (const fn of listeners.navigate ?? []) fn({ destination: { url } });
-    location.href = url;
-    for (const fn of listeners.navigatesuccess ?? []) fn({});
-    await settle();
+test('an error code becomes its own quiet line of copy', async () => {
+  route = () => body(429, { error: 'rate_limited' });
+  const { panel, done } = openPopup();
+  await done;
+  assert.equal(panel.querySelector('.fx-error').textContent, 'Too many lookups right now. Try again in a moment.');
+});
+
+// An extension reload invalidates the context mid-flight and sendMessage rejects.
+// Unhandled, that leaves the popup on "Loading…" forever with nothing in the UI
+// to say why.
+test('a worker that cannot be reached says so instead of loading forever', async () => {
+  const { panel, done } = openPopup({ reachable: false });
+  await done;
+  assert.equal(panel.querySelector('.fx-error').textContent, 'Could not reach Fundable.');
+});
+
+// The action is clickable on every tab now, not just the https pages the old
+// content script matched. None of these is a company Fundable is "working on
+// adding" — there is no page to have an opinion about, and on most of them
+// activeTab grants no URL at all, so tab.url is undefined.
+test('a page that cannot hold a company says so, rather than claiming coverage', async () => {
+  route = () => {
+    throw new Error('a non-web page must not be looked up');
   };
-
-  try {
-    panel.start();
-    await settle();
-    assert.equal(hosts().length, 0, 'no pill where the resolver says null');
-    assert.equal(
-      Object.values(listeners).flat().length,
-      1,
-      'exactly one navigation subscription — two would re-resolve every route twice',
-    );
-
-    await go('https://www.linkedin.com/company/stripe');
-    assert.equal(hosts().length, 1, 'routing to a company page must mount the pill');
-
-    await go('https://www.linkedin.com/company/ramp');
-    assert.equal(hosts().length, 1, 'routing on must not leave the previous host behind');
-
-    assert.equal(fontRequests, 1, 'the faces belong to the document, not to each mount');
-
-    await go('https://www.linkedin.com/feed/');
-    assert.equal(hosts().length, 0, 'routing away must unmount the pill, not just hide it');
-  } finally {
-    delete globalThis.navigation;
-    delete globalThis.location;
+  // '' stands in for the tab Chrome hands back with no `url` at all, which is
+  // what activeTab yields on a restricted page. It cannot be written as
+  // `undefined` here: openPopup's default parameter would swallow it.
+  for (const url of ['chrome://newtab/', 'about:blank', 'file:///Users/x/notes.txt', '']) {
+    const { panel, done, sends } = openPopup({ url });
+    await done;
+    assert.equal(panel.querySelector('.fx-miss').textContent, 'No company on this page');
+    assert.equal(sends(), 0, `${url}: nothing to resolve, so nothing is asked`);
   }
 });
 
-// navigatesuccess fires for every same-document navigation, and most of them are
-// not a new company: a replaceState adding a tracking param, scroll restoration,
-// a hash change, LinkedIn's in-page tabs. Rebuilding on those destroys the card
-// the reader is mid-way through, so the resolved identifier decides — an href
-// compare cannot express "same company", which is why this kept coming back.
-//
-// The two guards do different jobs and both have to hold: the href skips the
-// round trip for a navigation that did not move, and it names the URL in flight
-// so arriving back at it is not swallowed; the identifier skips the rebuild for
-// a URL that moved but stayed on the same company.
-const SAME_COMPANY = [
-  // [what moved, href, init round trips it should cost]
-  ['nothing at all', 'https://www.linkedin.com/company/stripe', 0],
-  ['an in-page tab', 'https://www.linkedin.com/company/stripe/about/', 1],
-  ['a tracking param', 'https://www.linkedin.com/company/stripe?trk=nav', 1],
-  ['a fragment', 'https://www.linkedin.com/company/stripe#people', 1],
-];
+// background.js answers a throw from either handler with {error: 'unavailable'},
+// init included. That object has no `identifier`, so an unchecked init error
+// reads as the miss copy — telling the reader Fundable is adding a company whose
+// coverage was never checked, which is the one thing the network guard beside it
+// exists to prevent.
+test('a worker that fails during init reports the failure, not a miss', async () => {
+  chrome.tabs = { query: async () => [{ url: 'https://wealthsimple.com' }] };
+  chrome.runtime.sendMessage = async () => ({ error: 'unavailable' });
+  const panel = document.createElement('div');
+  await popup.open(panel);
+  assert.equal(panel.querySelector('.fx-error').textContent, 'Fundable is unavailable right now.');
+});
 
-test('the pill is rebuilt if and only if the resolved company changed', async () => {
-  const listeners = {};
-  globalThis.navigation = {
-    addEventListener: (type, fn) => ((listeners[type] ??= []).push(fn)),
+// The timeout code the worker now passes through must reach copy that invites a
+// retry — the failure is a cold-cache coin flip, so the next click often works.
+// An unmapped code (forbidden) still falls back to the generic sentence.
+test('the passed-through error code selects the copy the user sees', async () => {
+  chrome.tabs = { query: async () => [{ url: 'https://wealthsimple.com' }] };
+  const render = async (error) => {
+    chrome.runtime.sendMessage = async (msg) =>
+      msg.type === 'init' ? { identifier: { kind: 'domain', value: 'x.com' } } : { error };
+    const panel = document.createElement('div');
+    await popup.open(panel);
+    return panel.querySelector('.fx-error').textContent;
   };
-  globalThis.location = { href: 'https://www.linkedin.com/company/stripe' };
-
-  let inits = 0;
-  let reachable = true;
-  let gate = null;
-  // Stands in for the resolver: every /company/<slug> path is one company,
-  // whatever tab, query or fragment hangs off it.
-  chrome.runtime.sendMessage = async (message) => {
-    if (message.type === 'lookup') return { found: true, card: { name: 'Stripe' } };
-    if (message.type !== 'init') return null;
-    inits++;
-    await gate;
-    if (!reachable) throw new Error('Extension context invalidated');
-    const slug = new URL(message.url).pathname.match(/^\/company\/([^/]+)/)?.[1];
-    return { identifier: slug ? { kind: 'linkedin', value: slug } : null, css: '' };
-  };
-
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  const host = () => document.querySelector('#fundable-extension-root');
-  const arrive = async (href = location.href) => {
-    location.href = href;
-    for (const fn of listeners.navigatesuccess ?? []) fn({});
-    await settle();
-  };
-
-  try {
-    panel.start();
-    await settle();
-    const mounted = host();
-    assert.ok(mounted, 'the pill mounts on a company page');
-
-    mounted.shadowRoot.querySelector('.fx-pill').click();
-    await settle();
-    const card = mounted.shadowRoot.querySelector('.fx-panel');
-    assert.equal(card.style.display, '', 'the reader has the panel open');
-    assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
-
-    for (const [what, href, cost] of SAME_COMPANY) {
-      const before = inits;
-      await arrive(href);
-      assert.equal(host(), mounted, `${what} changed, not the company; the pill must not be rebuilt`);
-      assert.equal(card.style.display, '', `${what} changed; the open card must survive`);
-      assert.equal(card.querySelector('.fx-name').textContent, 'Stripe');
-      assert.equal(inits - before, cost, `${what} changed; wrong number of init round trips`);
-    }
-
-    await arrive('https://www.linkedin.com/company/ramp');
-    assert.notEqual(host(), null, 'a different company still mounts a pill');
-    assert.notEqual(host(), mounted, 'a different company rebuilds the pill');
-    assert.equal(document.querySelectorAll('#fundable-extension-root').length, 1);
-
-    await arrive('https://www.linkedin.com/feed/');
-    assert.equal(host(), null, 'a page that resolves to nothing unmounts the pill, not just hides it');
-
-    // A worker that never answered — restarting, or the context invalidated by
-    // an extension reload — must leave no record, so the next navigation retries.
-    // A deny-listed page is different: it answered, so it stays quiet.
-    reachable = false;
-    await arrive('https://www.linkedin.com/company/stripe');
-    assert.equal(host(), null, 'a transport failure has nothing to mount');
-
-    reachable = true;
-    await arrive();
-    const kept = host();
-    assert.ok(kept, 'the same URL must be re-resolved after a transport failure');
-
-    // Back to the mounted company while the init for the page just left is still
-    // in flight — one runtime round trip wide, which is real against a cold
-    // worker. The answer that lands names a URL the reader is no longer on, and
-    // the guard has to have recorded the URL in flight or it swallows the return.
-    let release;
-    gate = new Promise((resolve) => (release = resolve));
-    await arrive('https://www.linkedin.com/feed/');
-    await arrive('https://www.linkedin.com/company/stripe');
-    release();
-    gate = null;
-    await settle();
-    assert.equal(host(), kept, 'coming back mid-flight must not take the pill with it');
-  } finally {
-    delete globalThis.navigation;
-    delete globalThis.location;
-    for (const node of document.querySelectorAll('#fundable-extension-root')) node.remove();
-  }
+  assert.equal(await render('upstream_error'), 'Fundable took too long to respond. Try again.');
+  assert.equal(await render('temporarily_unavailable'), 'Fundable is at capacity right now. Try again shortly.');
+  assert.equal(await render('forbidden'), 'Fundable is unavailable right now.');
 });

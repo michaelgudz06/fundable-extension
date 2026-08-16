@@ -1,7 +1,7 @@
-// Run: node extension/resolver.test.js
-// No framework on purpose — the extension ships with no build step.
+// Lives here, not in extension/, because everything in extension/ ships to the
+// Web Store. Kept its own tiny harness — the extension has no build step.
 import assert from 'node:assert/strict';
-import { resolveIdentifier } from './resolver.js';
+import { resolveIdentifier } from '../extension/resolver.js';
 
 let failed = 0;
 const test = (name, fn) => {
@@ -53,11 +53,13 @@ resolves('multi-part public suffixes are not split naively', 'domain', [
 ]);
 
 // A label is only a public suffix under the TLDs where it genuinely is one:
-// co.uk is, web.de is not, so one site never gets two lookup keys.
+// co.uk is, web.it is not, so one site never gets two lookup keys. (web.de would
+// prove the same rule but is Germany's largest email portal, so it is denied
+// outright below — the rule needs a host that is merely obscure, not private.)
 resolves('a suffix label under another TLD is the registrant, not a suffix', 'domain', [
-  ['https://web.de/', 'web.de'],
-  ['https://www.web.de/', 'web.de'],
-  ['https://blog.web.de/', 'web.de'],
+  ['https://web.it/', 'web.it'],
+  ['https://www.web.it/', 'web.it'],
+  ['https://blog.web.it/', 'web.it'],
   ['https://www.info.de/', 'info.de'],
   ['https://www.biz.co/', 'biz.co'],
   ['https://www.ltd.ai/', 'ltd.ai'],
@@ -365,5 +367,7 @@ test('the same page always resolves to the same value', () => {
   assert.deepEqual(a, b);
 });
 
-console.log(failed === 0 ? 'resolver: all tests passed' : `resolver: ${failed} failing test group(s)`);
-process.exit(failed === 0 ? 0 : 1);
+// Throw rather than process.exit: `npm test` runs this under `node --test`
+// alongside the other suites, and exiting here would truncate the whole run.
+if (failed > 0) throw new Error(`resolver: ${failed} failing test group(s)`);
+console.log('resolver: all tests passed');

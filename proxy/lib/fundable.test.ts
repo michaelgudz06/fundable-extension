@@ -351,3 +351,65 @@ describe('fetchCard ladder', () => {
     expect(init.headers).toEqual({ authorization: 'Bearer test-key' });
   });
 });
+
+// Fundable's slug index is thinner than its domain index: crunchbase `notion`
+// misses while `notion.so` returns a full card. The retry closes that, but it is
+// only safe because the candidate has to prove it is the same company.
+describe('a slug lookup that misses retries by name', () => {
+  const cbId = normalizeIdentifier('crunchbase', 'https://www.crunchbase.com/organization/notion')!;
+  const domainId = normalizeIdentifier('domain', 'wealthsimple.com')!;
+  const slugMiss: Routes = {
+    'crunchbase=': [200, { success: true, data: { companies: [] } }, undefined] as any,
+  };
+
+  it('accepts a name hit whose own slug matches the one we asked for', async () => {
+    const calls = stubFetch({
+      ...slugMiss,
+      'name=': [
+        200,
+        {
+          success: true,
+          data: {
+            companies: [
+              { id: 'uuid-1', crunchbase: 'https://www.crunchbase.com/organization/notion' },
+            ],
+          },
+          meta: { credits_used: 0.1 },
+        },
+      ],
+      '/company?': [200, { success: true, data: { company: COMPANY } }, undefined] as any,
+      '/investors': [200, { success: true, data: { investors: [] } }, undefined] as any,
+    });
+    const res = await fetchCard(cbId);
+    expect(res.found).toBe(true);
+    expect(calls.some((u) => u.includes('name=notion'))).toBe(true);
+  });
+
+  it('rejects a name hit for a different company rather than show the wrong card', async () => {
+    stubFetch({
+      ...slugMiss,
+      'name=': [
+        200,
+        {
+          success: true,
+          data: {
+            companies: [
+              // Same name, different company — the slug is the proof, and it disagrees.
+              { id: 'uuid-9', crunchbase: 'https://www.crunchbase.com/organization/notion-labs' },
+            ],
+          },
+          meta: { credits_used: 0.1 },
+        },
+      ],
+    });
+    expect((await fetchCard(cbId)).found).toBe(false);
+  });
+
+  it('never spends the retry on a domain lookup, which cannot benefit from it', async () => {
+    const calls = stubFetch({
+      '/company/search': [200, { success: true, data: { companies: [] }, meta: { credits_used: 0.1 } }],
+    });
+    expect(await fetchCard(domainId)).toEqual({ found: false, credits: 0.1 });
+    expect(calls).toHaveLength(1);
+  });
+});

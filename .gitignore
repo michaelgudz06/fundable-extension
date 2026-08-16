@@ -5,6 +5,10 @@ node_modules/
 *.pem
 *.pkcs8
 
+# Packed builds. Regenerable, and a stale one ships whatever architecture it was
+# packed from — never let one become the artifact of record.
+*.crx
+
 # Vercel / Next.js (proxy/)
 .next/
 .vercel/

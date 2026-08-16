@@ -22,8 +22,10 @@ const DENY_HOSTS = {
     'chase.com', 'bankofamerica.com', 'wellsfargo.com', 'citi.com', 'citibank.com',
     'capitalone.com', 'usbank.com', 'pnc.com', 'truist.com', 'ally.com', 'discover.com',
     'amex.com', 'americanexpress.com', 'td.com', 'tdbank.com', 'rbc.com', 'rbcroyalbank.com',
-    'scotiabank.com', 'bmo.com', 'cibc.com', 'hsbc.com', 'hsbc.co.uk', 'barclays.co.uk',
-    'lloydsbank.com', 'natwest.com', 'halifax.co.uk', 'santander.com', 'ing.com',
+    'scotiabank.com', 'bmo.com', 'cibc.com', 'hsbc.com', 'hsbc.co.uk', 'hsbc.ca',
+    'barclays.co.uk', 'barclays.com', 'lloydsbank.com', 'natwest.com', 'halifax.co.uk',
+    'santander.com', 'santander.co.uk', 'ing.com', 'usaa.com', 'navyfederal.org',
+    'tangerine.ca', 'simplii.com', 'desjardins.com', 'nationwide.co.uk', 'tsb.co.uk',
     'schwab.com', 'fidelity.com', 'vanguard.com', 'etrade.com', 'robinhood.com',
     'tdameritrade.com', 'interactivebrokers.com', 'coinbase.com', 'binance.com',
     'kraken.com', 'blockchain.com', 'metamask.io',
@@ -37,7 +39,8 @@ const DENY_HOSTS = {
     'mychart.com', 'myuhc.com', 'uhc.com', 'anthem.com', 'cigna.com', 'aetna.com',
     'bcbs.com', 'kaiserpermanente.org', 'teladoc.com', 'goodrx.com', 'webmd.com',
     'mayoclinic.org', 'plannedparenthood.org', 'healthline.com', 'psychologytoday.com',
-    'betterhelp.com', 'nhs.uk',
+    'betterhelp.com', 'nhs.uk', 'cvs.com', 'walgreens.com', 'talkspace.com',
+    'zocdoc.com', 'onemedical.com', 'drugs.com', 'hims.com', 'forhims.com', 'forhers.com',
   ],
   // Most government is caught by the .gov/.mil/.gouv/.gob label rule below.
   government: ['irs.gov', 'ssa.gov', 'usa.gov', 'gov.uk', 'canada.ca', 'service-public.fr'],
@@ -45,6 +48,9 @@ const DENY_HOSTS = {
     'gmail.com', 'googlemail.com', 'outlook.com', 'office.com', 'office365.com',
     'microsoftonline.com', 'hotmail.com', 'live.com', 'proton.me', 'protonmail.com',
     'tutanota.com', 'fastmail.com', 'hey.com', 'zoho.com', 'aol.com', 'gmx.com',
+    // Regional portals: the .com entry above does not cover the national one.
+    'gmx.de', 'gmx.net', 'web.de', 't-online.de', 'seznam.cz', 'libero.it',
+    'laposte.net', 'orange.fr', 'free.fr',
     'mail.com', 'mail.ru', 'whatsapp.com', 'slack.com', 'discord.com', 'discordapp.com',
     'messenger.com', 'telegram.org', 'signal.org', 'teams.microsoft.com', 'zoom.us',
     'webex.com',
@@ -68,7 +74,8 @@ const DENY_HOSTS = {
     'pornhub.com', 'xvideos.com', 'xhamster.com', 'xnxx.com', 'redtube.com',
     'youporn.com', 'onlyfans.com', 'fansly.com', 'chaturbate.com', 'stripchat.com',
     'spankbang.com', 'eporner.com', 'brazzers.com', 'adultfriendfinder.com',
-    'nhentai.net', 'rule34.xxx',
+    'nhentai.net', 'rule34.xxx', 'fetlife.com', 'manyvids.com', 'clips4sale.com',
+    'myfreecams.com', 'bongacams.com', 'livejasmin.com', 'playboy.com',
   ],
 };
 
@@ -113,8 +120,22 @@ const AUTH_WORDS = new Set([
 // portal, not a homepage; "mail.acme.com" is somebody's open inbox), so the .id,
 // .my and .email namespaces are not their own portals. Checked after
 // LinkedIn/Crunchbase, so my.linkedin.com and id.linkedin.com still resolve.
+//
+// `app` and friends are the load-bearing entries: a logged-in product surface is
+// the shape a company's private side almost always takes (app.monzo.com,
+// app.ramp.com), and denying the label denies it at every company at once. That
+// is why venture-backed fintech and health companies are NOT in DENY_HOSTS —
+// their marketing root is exactly what a Fundable user looks up, and blanket-
+// denying the brand would break the product to fix something this rule already
+// covers. Only institutions nobody researches for funding are listed there.
+// `.app` as a TLD is unaffected: the subdomain slice is empty for linear.app.
 const AUTH_HOST_LABELS = new Set(['my', 'portal', 'identity', 'passport', 'id',
-  'signin', 'login', 'mail', 'webmail', 'inbox', 'email', 'owa']);
+  'signin', 'login', 'mail', 'webmail', 'inbox', 'email', 'owa',
+  'app', 'apps', 'console', 'workspace', 'members', 'vpn', 'intranet',
+  // Health portals hang off otherwise-ordinary orgs (myhealth.<province>.ca,
+  // patient.<hospital>.org); the label catches them without enumerating every
+  // health authority on earth.
+  'health', 'myhealth', 'patient', 'patients']);
 
 // OAuth / OIDC / SAML / WS-Federation in flight, whatever the host says. Matched
 // against query AND fragment parameter NAMES, lowercased with `-` and `_`

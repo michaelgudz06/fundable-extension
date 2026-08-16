@@ -92,14 +92,17 @@ export function normalizeIdentifier(kind: IdKind, raw: string): Identifier | nul
   return slug ? { kind, key: `${kind}:${slug}`, upstream: base + slug } : null;
 }
 
-// Bounds the ladder only, not the request. On a healthy cache that keeps total server time
-// under the extension's own card timeout (`CARD_TIMEOUT_MS`, 8s), so the client stops
-// aborting first and the user sees the real cause instead of "could not reach Fundable".
-// A degraded cache still breaks the inequality: the route makes up to five sequential
-// Upstash round trips before the ladder and up to four after — the card write, `recordMiss`
-// on a miss, and the settle's INCRBYFLOAT and EXPIRE — each up to `UPSTASH_TIMEOUT_MS`.
-// Closing that gap end to end means raising the client timeout, which lives in extension/.
-const UPSTREAM_TIMEOUT_MS = 5000;
+// Bounds the whole ladder, not each leg — one deadline shared across search, the name
+// retry, /company and /investors (pinned by a test). At 5s it was too tight: a cold slug
+// miss pays four sequential legs (search + retry + company + investors), which measured
+// 2.5–3.2s warm and tailed past 5s cold, firing mid-leg as a TimeoutError the route turns
+// into a 502 the user reads as an error. 7s fits the cold four-leg case while staying under
+// the extension's own `CARD_TIMEOUT_MS` (8s) — the client must keep aborting *second* or the
+// user sees "could not reach Fundable" instead of the real cause. That 1s of slack also has
+// to cover the route's cache round trips (up to five before the ladder, four after, each up
+// to `UPSTASH_TIMEOUT_MS`); a healthy Upstash is single-digit ms, but a degraded one breaks
+// the inequality and closing that end to end means raising the client timeout, in extension/.
+const UPSTREAM_TIMEOUT_MS = 7000;
 
 async function call(
   path: string,
@@ -171,6 +174,27 @@ function toCard(c: any, investors: any[]): Card {
 }
 
 /**
+ * Fundable indexes companies by domain far more completely than by LinkedIn or
+ * Crunchbase slug: `crunchbase=.../organization/notion` misses while
+ * `domain=notion.so` returns a full card for the same company. One extra 0.1cr
+ * search by name closes that gap for the two slug kinds.
+ *
+ * The candidate is accepted ONLY when its own slug for this kind matches the one
+ * we searched. A bare name match is not enough — "atlas" or "apple" would
+ * confidently return some other company, and a wrong card is far worse than a
+ * clean miss. So the name is used as a search index and the slug as the proof.
+ */
+async function searchByName(id: Identifier, signal: AbortSignal) {
+  const path = id.kind === 'linkedin' ? 'company' : 'organization';
+  const slug = id.key.slice(id.kind.length + 1);
+  const res = await call('/company/search', { name: slug.replace(/[-_]+/g, ' ') }, 0.1, signal);
+  const match = (res.data.companies ?? []).find(
+    (c: any) => normalizeSlug(String(c?.[id.kind] ?? ''), path) === slug,
+  );
+  return { match, credits: res.credits };
+}
+
+/**
  * search (0.1cr) -> company (1cr) -> investors (1cr). A `200` with no companies, or a `404`
  * on the company lookup, is a genuine miss; a `402`/`429` on either of those two throws and
  * must not be cached as one. The investors leg never throws — see below.
@@ -193,7 +217,13 @@ export async function fetchCard(
     const search = await call('/company/search', { [id.kind]: id.upstream }, 0.1, deadline);
     credits = search.credits;
 
-    const match = search.data.companies?.[0];
+    let match = search.data.companies?.[0];
+    // A slug kind that missed gets the verified name retry above before we call it a miss.
+    if (!match?.id && id.kind !== 'domain') {
+      const retry = await searchByName(id, deadline);
+      credits += retry.credits;
+      match = retry.match;
+    }
     if (!match?.id) return { found: false, credits };
 
     let company;
