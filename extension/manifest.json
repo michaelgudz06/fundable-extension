@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "minimum_chrome_version": "103",
+  "name": "Fundable",
+  "version": "0.1.0",
+  "description": "See who a company is and what they raised — from their website, LinkedIn, or Crunchbase.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuCj6xlQfBHYLCzcdmdMmcn4jycIKkgl9Ec8oBudinz8ueBaBqj4f6Xgc6tHeYKdOXen43Ne1jGzRBFq6v0Do5vm+aORLyDyhspMqcIA/Q7C/OyECqZkuCuPbC00JOL0+IKyqPRPLnqZinM8FTndM78bBUVWeK+1PinFHtd9kY/D5YbuDJTz5Ta8vpao73NY5eYfLFr6FYCNtFAUWGGL+bI0pl1BEHgTz28uaiPwgjpbE9YnAE0DYCSqlCgCm6snKO/k3zUyezqm81XMvjCGHmqjdzpN/qDAk9r88bXR/tq0NozdcexhwIoMlMqpLAY45JK8DSeKOchgulJkPRjWhUwIDAQAB",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "host_permissions": [
+    "https://fundable-extension-api.vercel.app/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Fundable"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
