@@ -171,12 +171,15 @@ a {
   color: var(--fx-ink);
 }
 
+/* Two dividers, not four. The card has three zones — identity, stats, and the
+   funding story — so only the tiles and the round rule a line above themselves.
+   The investor list belongs to the round (one story, so grouped by whitespace,
+   not split by a line) and the footer link just floats under the card. Four
+   full-width rules turned the card into a stack of slabs; this is the fix. */
 .fx-tiles,
-.fx-round,
-.fx-investors,
-.fx-footer {
-  margin-top: 18px;
-  padding-top: 18px;
+.fx-round {
+  margin-top: 16px;
+  padding-top: 16px;
   border-top: 1px solid var(--fx-line);
 }
 
@@ -189,7 +192,7 @@ a {
 .fx-tiles {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 16px 12px;
+  gap: 14px 12px;
 }
 
 .fx-tile {
@@ -263,9 +266,11 @@ a {
   text-decoration: underline;
 }
 
-/* Investors */
+/* Investors — grouped under the round (same funding story), so it opens on a
+   margin and its own overline, not a divider. */
 
 .fx-investors {
+  margin-top: 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -319,6 +324,7 @@ a {
 }
 
 .fx-footer {
+  margin-top: 18px;
   display: block;
   font-size: 12px;
   color: var(--fx-ink);
