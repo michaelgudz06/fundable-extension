@@ -267,10 +267,10 @@ function investors(card) {
 
   // A long list (Stripe ships 16) turns the card into a scroll. Show the first
   // few — leads already sort first — and hold the rest behind one button that
-  // reveals them in place; the count sets the expectation before the click.
+  // reveals them all in place.
   const rest = rows.slice(INVESTOR_PREVIEW);
   if (rest.length) {
-    const more = el('button', 'fx-more', `Show ${rest.length} more`);
+    const more = el('button', 'fx-more', 'Show more');
     more.type = 'button';
     more.addEventListener('click', () => {
       more.replaceWith(...rest);

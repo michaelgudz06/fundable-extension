@@ -72,13 +72,13 @@
    clipping nothing while the document scrolls anyway. Both were dropped rather
    than left here describing a container that never existed. */
 
+/* Full-bleed, not a floating card. A Chrome popup is a rectangular window; a
+   rounded card inset inside it just exposes the window's own background as a
+   sharp-cornered frame around the card. Going edge-to-edge lets the content
+   take the window's corners instead — which Chrome already rounds on macOS. */
 body {
   width: 360px;
-  /* Neutral backdrop so the white card reads as a rounded card floating on it,
-     not a full-bleed rectangle clipped by the popup window. The 8px gutter is
-     what makes the rounded corners visible on all four sides. */
-  background: var(--fx-fill);
-  padding: 8px;
+  background: var(--fx-surface);
   font-family: 'PP Mori', Helvetica, Arial, sans-serif;
   font-size: 13px;
   line-height: 1.45;
@@ -96,9 +96,6 @@ a {
 .fx-panel {
   display: block;
   padding: 16px;
-  background: var(--fx-surface);
-  border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 6px 20px rgba(16, 24, 40, 0.06);
 }
 
 /* Header — logo in column 1 spanning both text rows, name and meta stacked in

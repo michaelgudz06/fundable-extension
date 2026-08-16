@@ -514,7 +514,7 @@ test('a long investor list previews the first few behind a Show more button', ()
   const section = render({ ...FULL, investors: many }).querySelector('.fx-investors');
   assert.equal(section.querySelectorAll('.fx-investor').length, 5, 'only the preview shows first');
   const more = section.querySelector('.fx-more');
-  assert.equal(more.textContent, 'Show 2 more');
+  assert.equal(more.textContent, 'Show more');
   more.click();
   assert.equal(section.querySelectorAll('.fx-investor').length, 7, 'the rest reveal in place');
   assert.equal(section.querySelector('.fx-more'), null, 'the button is gone once used');
