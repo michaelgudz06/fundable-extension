@@ -1,0 +1,341 @@
+/* Fundable company card — Shadow DOM stylesheet.
+   Tokens read off the live product (tryfundable.ai/company/wealthsimple), not the spec sheet.
+
+   No @font-face here, deliberately: Chrome ignores one declared inside a shadow root.
+   background.js fetches the PP Mori files and content.js registers them by way of
+   document.fonts.add(), so the family name in the stack below is a contract with
+   content.js — keep the two in sync. The hashed font filenames rotate on every Fundable
+   deploy, so Helvetica/Arial still has to carry the card whenever that fetch fails; the
+   type scale below is set so it does. */
+
+.fx-panel,
+.fx-pill {
+  --fx-ink: #000;
+  --fx-ink-hover: #212B36;
+  --fx-muted: #696969;
+  --fx-surface: #fff;
+  --fx-fill: #F3F4F6;
+  --fx-line: #E5E7EB;
+  --fx-ring: #F4F6F8;
+  --fx-green: #00A76F;
+
+  /* The two `-text` tokens darken the spec sheet's brand hexes purely to clear
+     WCAG AA on text. Lead badge label #00A76F -> #007850 (4.74:1 on the
+     composited tint, was 2.67:1); the tint itself keeps #00A76F so the badge
+     still reads as Fundable green. Error copy #FF5630 -> #C74325 (4.93:1 on
+     white, was 3.17:1). `--fx-red: #FF5630` was dropped outright rather than
+     left orphaned — .fx-error's text was its only consumer — so #FF5630 is
+     deliberately absent from this file. */
+
+  --fx-green-text: #007850;
+  --fx-red-text: #C74325;
+}
+
+/* A hostile host page reaches into the shadow tree only through inherited
+   properties, so `all` neutralises every one of them — including the ones a
+   hand-written list would never think to name. Only the exceptions need
+   naming: `direction` and `unicode-bidi` are excluded from `all` by spec, and
+   `box-sizing` is re-declared because the card needs a value other than its
+   initial one. `list-style: none` belongs in the descendant reset below, not
+   here — on the root it loses to the UA's own `ul { list-style-type: disc }`.
+   `all` also outranks the UA's `:focus-visible` ring, so .fx-pill re-declares
+   one. Applied here rather than on `:host` because document styles outrank
+   `:host` for the host element, but never reach an element inside the shadow
+   tree. */
+
+.fx-panel,
+.fx-pill {
+  all: initial;
+  direction: ltr;
+  unicode-bidi: normal;
+
+  box-sizing: border-box;
+  font-family: 'PP Mori', Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fx-muted);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scoped through :where() so the reset can never repaint a host page if this
+   file is ever wired through content_scripts.css, while keeping the zero
+   specificity the bare `*`/`a` selectors had. */
+
+:where(.fx-panel, .fx-pill) *,
+:where(.fx-panel, .fx-pill) *::before,
+:where(.fx-panel, .fx-pill) *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(.fx-panel) a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Trigger */
+
+.fx-pill {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483646;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--fx-ink);
+  color: var(--fx-surface);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .24);
+}
+
+.fx-pill:hover {
+  background: var(--fx-ink-hover);
+}
+
+/* Inset against the pill's own black fill, so the ring never depends on what
+   the host page paints behind it. */
+
+.fx-pill:focus-visible {
+  outline: 2px solid var(--fx-surface);
+  outline-offset: -5px;
+}
+
+/* Card */
+
+.fx-panel {
+  position: fixed;
+  top: 56px;
+  right: 16px;
+  z-index: 2147483647;
+  display: block;
+  width: 340px;
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  background: var(--fx-surface);
+  border: 1px solid var(--fx-line);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, .12);
+}
+
+/* Header — logo spans both text rows, so it works whether the markup nests
+   name + meta in a wrapper or leaves all three flat. */
+
+.fx-header {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  align-items: center;
+}
+
+.fx-logo {
+  grid-row: 1 / 3;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--fx-surface);
+  border: 2px solid var(--fx-ring);
+  object-fit: contain;
+}
+
+/* Wraps rather than ellipsises: the header grid is built for two text rows and
+   a truncated company name is not acceptable. `min-width: 0` drops the grid
+   item's automatic minimum so a long token cannot widen the track past 340px;
+   `break-word` then breaks that token instead of overflowing. */
+
+.fx-name {
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--fx-ink);
+  min-width: 0;
+  overflow-wrap: break-word;
+}
+
+.fx-meta {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* Link chips — sized to content, so one chip and six both look intentional. */
+
+.fx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.fx-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--fx-fill);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.fx-chip:hover {
+  color: var(--fx-ink);
+}
+
+.fx-tiles,
+.fx-round,
+.fx-investors,
+.fx-footer {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--fx-line);
+}
+
+/* Tiles */
+
+.fx-tiles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.fx-tile {
+  min-width: 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--fx-fill);
+}
+
+.fx-tile-label {
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.fx-tile-value {
+  margin-top: 2px;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--fx-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Latest round — 12px on the block itself, so the head, date, source and the
+   unclassed native-currency line all inherit one size and only the amount
+   overrides it. */
+
+.fx-round {
+  font-size: 12px;
+}
+
+.fx-round-amount {
+  margin-top: 2px;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--fx-ink);
+}
+
+/* Live renders card links as plain text; the ink rest state is a deliberate
+   departure. A source link pixel-identical to the date beside it is a feature
+   nobody will ever click, and every other link here already carries a rest
+   affordance (.fx-chip its fill, .fx-footer its ink), so this reuses an
+   established pattern rather than inventing one. */
+
+.fx-round-source {
+  color: var(--fx-ink);
+}
+
+.fx-round-source:hover {
+  text-decoration: underline;
+}
+
+/* Investors */
+
+.fx-investors {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.fx-investor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.fx-investor-logo {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--fx-surface);
+  border: 1px solid var(--fx-ring);
+  object-fit: contain;
+}
+
+.fx-investor-name {
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--fx-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The only colour on the card. */
+.fx-lead-badge {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fx-green) 14%, transparent);
+  color: var(--fx-green-text);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+}
+
+.fx-footer {
+  display: block;
+  font-size: 12px;
+  color: var(--fx-ink);
+}
+
+.fx-footer:hover {
+  text-decoration: underline;
+}
+
+/* States */
+
+.fx-loading,
+.fx-miss,
+.fx-error {
+  padding: 24px 16px;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.fx-loading {
+  animation: fx-pulse 1.4s ease-in-out infinite;
+}
+
+.fx-error {
+  color: var(--fx-red-text);
+}
+
+@keyframes fx-pulse {
+  50% { opacity: .45; }
+}
