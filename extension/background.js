@@ -18,8 +18,8 @@ const ASSET_TIMEOUT_MS = 4000;
 
 // Returning true keeps sendResponse alive across the await, which makes an
 // unanswered message indistinguishable from a hang: the popup sits on "Loading…"
-// until Chrome tears the worker down. resolver.js and the proxy are other
-// crewmates' work, so a throw from either is a live possibility.
+// until Chrome tears the worker down. resolver.js and the proxy are
+// separate moving parts, so a throw from either is a live possibility.
 const respond = (work, sendResponse) =>
   work.then(sendResponse, () => sendResponse({ error: 'unavailable' }));
 
