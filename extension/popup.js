@@ -198,33 +198,22 @@ function svgIcon(name, className) {
 // Every section returns null when it has nothing to show, so missing data hides
 // its element rather than rendering an empty box.
 
-// This company's public Fundable profile. Used by the Fundable chip and the
-// brand mark; null when the card has no permalink, which drops both.
+// This company's public Fundable profile, reached from the Fundable icon in the
+// links row; null when the card has no permalink, which drops that icon.
 function fundableUrl(card) {
   return card.guru_permalink
     ? `https://www.tryfundable.ai/company/${encodeURIComponent(card.guru_permalink)}`
     : null;
 }
 
-// Fundable brand mark, top-right of the header — the bundled toolbar icon, so
-// it costs no network request. Links to the company's Fundable page when there
-// is one, otherwise it's just the stamp.
-function brandMark(card) {
-  const href = fundableUrl(card);
-  const node = (href && link('fx-brand', href, null)) || el('div', 'fx-brand');
-  const img = el('img', 'fx-brand-logo');
-  img.src = 'icons/icon128.png';
-  img.alt = 'Fundable';
-  node.append(img);
-  return node;
-}
-
+// No brand mark in the header any more: the overlay's close control owns the
+// top-right corner, and the Fundable page it used to link to is one tap away from
+// the ⚡ in the links row — a second mark 50px above it only crowded the corner.
 function header(card) {
   const node = el('div', 'fx-header');
   const logo = logoImg('fx-logo', card.logo, card.name);
   if (logo) node.append(logo);
   if (card.name) node.append(el('div', 'fx-name', card.name));
-  if (card.name) node.append(brandMark(card));
   return node.childNodes.length ? node : null;
 }
 
@@ -415,8 +404,32 @@ export async function open(panel) {
   show(...renderCard(res.card));
 }
 
+// --- overlay plumbing --------------------------------------------------------
+// popup.html renders inside the transparent iframe inject.js mounts, not a
+// toolbar popup. Two things a popup never needed: a close control, and telling
+// the host iframe how tall to be so the card is neither clipped nor boxed in dead
+// space. Both are guarded on actually being framed, so importing this module
+// under test (where window.parent === window) does nothing.
+export function wireOverlay() {
+  if (typeof window === 'undefined' || window.parent === window) return;
+
+  const close = () => window.parent.postMessage('fundable-close', '*');
+  document.querySelector('.fx-close')?.addEventListener('click', close);
+  document.addEventListener('keydown', (e) => e.key === 'Escape' && close());
+
+  // The card's own height drives the iframe's, remeasured whenever it changes
+  // (a lookup resolving, "Show more" expanding the investor list).
+  const postSize = () => {
+    const height = Math.ceil(document.body.getBoundingClientRect().height);
+    if (height) window.parent.postMessage({ type: 'fundable-size', height }, '*');
+  };
+  postSize();
+  if (typeof ResizeObserver === 'function') new ResizeObserver(postSize).observe(document.body);
+}
+
 // Guarded the way content.js was, so importing this module under test does not
 // fire a lookup. chrome.tabs exists only in an extension page.
 if (globalThis.chrome?.tabs && chrome.runtime?.id) {
+  wireOverlay();
   open(document.querySelector('.fx-panel'));
 }

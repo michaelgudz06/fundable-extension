@@ -5,7 +5,15 @@
     <title>Fundable</title>
     <link rel="stylesheet" href="panel.css" />
   </head>
+  <!-- This page renders inside the transparent overlay iframe that inject.js
+       mounts on the active tab (see popup.js / inject.js). It is not a toolbar
+       popup any more; the body is transparent and the card floats on the page. -->
   <body>
+    <button class="fx-close" type="button" aria-label="Close">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M6 6l12 12M18 6L6 18" />
+      </svg>
+    </button>
     <section class="fx-panel" role="region" aria-label="Fundable company card">
       <div class="fx-loading">
         <img class="fx-loading-logo" src="icons/icon128.png" alt="Fundable" />

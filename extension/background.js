@@ -23,6 +23,18 @@ const ASSET_TIMEOUT_MS = 4000;
 const respond = (work, sendResponse) =>
   work.then(sendResponse, () => sendResponse({ error: 'unavailable' }));
 
+// Clicking the toolbar icon toggles the overlay on the active tab. There is no
+// default_popup, so onClicked fires. activeTab (granted by the click) is what lets
+// executeScript reach just this tab with no broad host permission; inject.js does
+// no network — it only mounts the transparent iframe that renders popup.html.
+chrome.action.onClicked.addListener((tab) => {
+  // executeScript throws on chrome://, the Web Store, the New Tab page and other
+  // restricted URLs. There is no company on those anyway, so skip them quietly
+  // rather than surfacing an error the user cannot act on.
+  if (!tab.id || !/^https?:\/\//i.test(tab.url ?? '')) return;
+  chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['inject.js'] }).catch(() => {});
+});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Today this is redundant: onMessage never fires for web pages or other
   // extensions (those need onMessageExternal, which is deliberately absent) and

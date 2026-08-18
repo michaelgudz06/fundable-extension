@@ -69,21 +69,22 @@
   list-style: none;
 }
 
-/* A Chrome popup sizes itself to the document and caps out at 600px tall, where
-   it scrolls on its own, so the width is the only thing worth fixing. A
-   `max-height` + `overflow-y` on the body does not make the card its own scroll
-   container: body overflow propagates to the viewport, leaving the body box
-   clipping nothing while the document scrolls anyway. Both were dropped rather
-   than left here describing a container that never existed. */
+/* This page is a transparent iframe on the host site, not a popup window, so the
+   card floats on nothing real: the body is transparent and the corners are truly
+   rounded — no grey-backdrop trick, because there is no opaque window frame to
+   hide. The 20px of padding is shadow room the iframe will not clip; inject.js
+   sizes the iframe's height to this body. `color-scheme: normal` keeps a dark
+   host page from inverting the card. `position: relative` anchors the close. */
+html {
+  color-scheme: normal;
+}
 
-/* A rounded white card floating on a grey backdrop. The 10px of --fx-bg around
-   the card is what makes the rounded corners read; the popup window itself is
-   rectangular (Chrome draws it), so the grey — not white — is what its corners
-   show, which keeps them from looking like a broken frame. */
 body {
-  width: 360px;
-  background: var(--fx-bg);
-  padding: 10px;
+  position: relative;
+  width: 380px;
+  max-width: 100%;
+  padding: 20px;
+  background: transparent;
   font-family: 'PP Mori', Helvetica, Arial, sans-serif;
   font-size: 13px;
   line-height: 1.45;
@@ -94,6 +95,37 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* Close control — an overlay does not dismiss itself the way a popup did on blur,
+   so it needs one. A small circle at the card's top-right corner; clicking it
+   posts to inject.js, which removes the iframe. */
+.fx-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--fx-surface);
+  color: var(--fx-muted);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.18);
+  cursor: pointer;
+}
+
+.fx-close:hover {
+  color: var(--fx-ink);
+}
+
+.fx-close svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* Card */
@@ -114,28 +146,15 @@ a {
    margin, not a column gap, so column 1 collapses to nothing when it is empty
    and the text still starts flush with the rest of the card. */
 
+/* Two columns — logo, then name. The name row clears the close control, which
+   floats above it at the panel's top-right corner (see .fx-close). */
 .fx-header {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto 1fr;
   gap: 2px 0;
   align-items: center;
-}
-
-/* Fundable brand mark, pinned to the top-right corner across both text rows.
-   The bundled icon already carries its own rounded white ground, so it just
-   needs sizing and a top alignment. */
-.fx-brand {
-  grid-column: 3;
-  grid-row: 1 / 3;
-  align-self: start;
-  display: inline-flex;
-  margin-left: 8px;
-}
-
-.fx-brand-logo {
-  width: 24px;
-  height: 24px;
-  object-fit: contain;
+  /* Room for the close circle so a long single-line name never tucks under it. */
+  padding-right: 20px;
 }
 
 /* Rounded square, not a circle: a circle reads as a person's avatar and crops

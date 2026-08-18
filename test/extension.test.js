@@ -13,12 +13,16 @@ let route = () => {
   throw new Error('no route set');
 };
 let listener;
+let clickListener;
 globalThis.chrome = {
   runtime: {
     id: 'test-extension-id',
     getURL: (name) => `chrome-extension://test/${name}`,
     onMessage: { addListener: (fn) => (listener = fn) },
   },
+  // background.js registers an onClicked handler at load to inject the overlay.
+  action: { onClicked: { addListener: (fn) => (clickListener = fn) } },
+  scripting: { executeScript: async () => {} },
 };
 globalThis.fetch = async (url, options) => route(url, options);
 
@@ -135,25 +139,37 @@ test('PP Mori is declared for both weights, behind a fallback that survives a 40
   );
 });
 
-test('manifest opens a popup, injects nothing, and keeps the extension ID pinned', () => {
+test('manifest injects the overlay on click, declares no content script, and pins the ID', () => {
   assert.ok(manifest.key, 'manifest needs a pinned key for a stable extension ID');
   assert.equal(manifest.background.type, 'module');
   assert.ok(
     !('content_scripts' in manifest),
-    'nothing is injected into any page — the pill is what the user asked to remove',
+    'nothing is injected declaratively — the overlay mounts only on click, via scripting+activeTab',
   );
-  assert.equal(manifest.action.default_popup, 'popup.html');
-  assert.ok(existsSync(path('popup.html')), 'the declared popup has to exist');
+  // No default_popup: with it set, chrome.action.onClicked never fires and the
+  // worker could not inject the overlay. Its absence is what makes the click
+  // reach background.js.
+  assert.ok(!manifest.action?.default_popup, 'a default_popup would suppress onClicked; the overlay needs the click');
+  assert.ok(existsSync(path('popup.html')), 'the overlay renders popup.html, so it has to exist');
+  assert.ok(existsSync(path('inject.js')), 'the click injects inject.js, so it has to exist');
   assert.deepEqual(
     manifest.permissions,
-    ['activeTab'],
-    'the popup reads the active tab because clicking the action is a user invocation',
+    ['activeTab', 'scripting'],
+    'activeTab grants this tab on click; scripting runs inject.js into it — no broad host permission',
   );
-  // The floor is the oldest Chrome that can *run* the extension: AbortSignal
-  // .timeout, in the worker's fetches, is the newest API anything depends on
-  // (Chrome 103). panel.css also uses color-mix() (Chrome 111), which is not a
-  // dependency — below 111 the lead badge simply loses its tint and keeps its
-  // green label, so the floor stays where the JS puts it.
+  // popup.html is framed by inject.js from the host page, so it must be a
+  // web-accessible resource. use_dynamic_url rotates the URL per load, which
+  // stops a page from fingerprinting the extension by a static resource URL.
+  const war = manifest.web_accessible_resources ?? [];
+  const entry = war.find((e) => e.resources?.includes('popup.html'));
+  assert.ok(entry, 'popup.html must be web-accessible for inject.js to frame it');
+  assert.equal(entry.use_dynamic_url, true, 'a static resource URL is a fingerprinting handle; rotate it');
+  // The floor is the oldest Chrome that can *run* the extension. scripting
+  // .executeScript with `files` is old, but web_accessible_resources v3 objects
+  // (matches + use_dynamic_url) need Chrome 102, and AbortSignal.timeout in the
+  // worker's fetches needs 103 — so 103 remains the true floor. panel.css also
+  // uses color-mix() (Chrome 111), which is not a dependency: below 111 the lead
+  // badge simply loses its tint and keeps its green label.
   assert.equal(manifest.minimum_chrome_version, '103');
   for (const host of manifest.host_permissions) {
     assert.doesNotMatch(host, /<all_urls>|\*:\/\/\*\//, 'host_permissions must name the proxy only');
@@ -161,13 +177,125 @@ test('manifest opens a popup, injects nothing, and keeps the extension ID pinned
 });
 
 // The shell is the entry point and nothing else covers it: a renamed file or a
-// dropped type="module" would leave a permanently blank popup with a green suite.
-test('popup.html loads the packaged stylesheet and the module', () => {
+// dropped type="module" would leave a permanently blank overlay with a green suite.
+test('popup.html loads the packaged stylesheet, the module, and a close control', () => {
   const html = read('popup.html');
   assert.match(html, /<link rel="stylesheet" href="panel\.css"/);
   assert.match(html, /<script type="module" src="popup\.js"/);
   assert.match(html, /class="fx-panel"/, 'popup.js renders into .fx-panel');
+  // The overlay does not dismiss on blur the way a popup did, so the shell ships
+  // the close control; wireOverlay() binds it to a postMessage the frame acts on.
+  assert.match(html, /class="fx-close"/, 'the overlay needs a close control in its shell');
   for (const file of ['panel.css', 'popup.js']) assert.ok(existsSync(path(file)));
+});
+
+// ---------------------------------------------------------------------------
+// inject.js — the only code that touches a host page. It runs in the extension's
+// isolated world on click, mounts the transparent iframe that renders popup.html,
+// toggles off on a second click, and closes/resizes on messages from its own
+// frame. It does no network; the network guard on popup.js/background.js covers
+// that boundary, and this covers the mount/toggle/close/clamp behaviour.
+// ---------------------------------------------------------------------------
+
+// inject.js is an IIFE that closes over `window`, `document` and `chrome`. jsdom's
+// own eval does not bind those in the eval scope, so run it as a Function with the
+// jsdom window's globals passed in — the IIFE then reads/writes the real window.
+const injectCode = read('inject.js');
+const injectFn = new Function('window', 'document', 'chrome', injectCode);
+const CHROME_STUB = { runtime: { getURL: (name) => `chrome-extension://test/${name}` } };
+function inject(win) {
+  injectFn(win, win.document, CHROME_STUB);
+  return win.document.getElementById('fundable-overlay-host');
+}
+
+// The listener gates on `e.source === host.contentWindow`. jsdom does not give a
+// framed extension URL a real contentWindow, so pin a sentinel as the frame's
+// contentWindow and return a `fire` that can post as the frame (default) or as an
+// impostor. getElementById hands back this same node, so the listener sees it too.
+function framed(win, frame) {
+  const contentWindow = {};
+  Object.defineProperty(frame, 'contentWindow', { value: contentWindow, configurable: true });
+  return (data, source = contentWindow) => {
+    const e = new win.MessageEvent('message', { data });
+    Object.defineProperty(e, 'source', { value: source });
+    win.dispatchEvent(e);
+  };
+}
+
+test('inject.js does no network of its own', () => {
+  // Same rule as popup.js: this file runs on the host page, so a fetch here would
+  // be the exact leak the whole architecture avoids. Whole-line comments stripped.
+  const code = injectCode.replace(/^\s*\/\/.*$/gm, '');
+  for (const [pattern, what] of FORBIDDEN) {
+    assert.equal(pattern.test(code), false, `inject.js uses ${what}; it must only mount the frame`);
+  }
+});
+
+test('the first click mounts a transparent iframe rendering popup.html', () => {
+  const win = new JSDOM('<!doctype html><body>').window;
+  const frame = inject(win);
+  assert.ok(frame, 'the overlay host must be created');
+  assert.equal(frame.tagName, 'IFRAME');
+  assert.equal(frame.src, 'chrome-extension://test/popup.html', 'it frames the extension page, cross-origin to the host');
+  assert.match(frame.getAttribute('style'), /background:\s*transparent/);
+  assert.match(frame.getAttribute('style'), /position:\s*fixed/);
+});
+
+test('a second click toggles the overlay off', () => {
+  const win = new JSDOM('<!doctype html><body>').window;
+  inject(win);
+  assert.ok(win.document.getElementById('fundable-overlay-host'), 'first click mounts');
+  inject(win); // second click, same isolated world
+  assert.equal(win.document.getElementById('fundable-overlay-host'), null, 'second click removes it');
+});
+
+test('a fundable-close message from the frame removes the overlay', () => {
+  const win = new JSDOM('<!doctype html><body>').window;
+  const frame = inject(win);
+  framed(win, frame)('fundable-close');
+  assert.equal(win.document.getElementById('fundable-overlay-host'), null, 'close removes the frame');
+});
+
+test('a size message resizes the frame but is clamped against a page-cover attack', () => {
+  const win = new JSDOM('<!doctype html><body>').window;
+  const frame = inject(win);
+  const fire = framed(win, frame);
+  fire({ type: 'fundable-size', height: 480 });
+  assert.equal(frame.style.height, '480px', 'a sane height is honoured');
+  fire({ type: 'fundable-size', height: 999999 });
+  assert.equal(frame.style.height, '820px', 'an absurd height is clamped, not allowed to cover the page');
+});
+
+test('a message not sourced from the frame cannot drive the overlay', () => {
+  const win = new JSDOM('<!doctype html><body>').window;
+  const frame = inject(win);
+  framed(win, frame)('fundable-close', {}); // an impostor source, not the frame
+  assert.ok(win.document.getElementById('fundable-overlay-host'), 'a forged source is ignored; the frame stays');
+});
+
+// The toolbar click is the overlay's only entry point. It injects inject.js into
+// the active tab on a web page, and skips chrome://, the Web Store, blank tabs and
+// anything without an http(s) URL, where executeScript would throw and there is no
+// company to show anyway.
+test('clicking the action injects only into a real web page', async () => {
+  const injected = [];
+  chrome.scripting.executeScript = async (opts) => (injected.push(opts), {});
+  const click = (tab) => clickListener(tab);
+
+  await click({ id: 7, url: 'https://wealthsimple.com/en-ca' });
+  assert.deepEqual(injected, [{ target: { tabId: 7 }, files: ['inject.js'] }]);
+
+  injected.length = 0;
+  for (const tab of [
+    { id: 7, url: 'chrome://newtab/' },
+    { id: 7, url: 'about:blank' },
+    { id: 7, url: 'file:///Users/x/notes.txt' },
+    { id: 7 }, // restricted page: activeTab yields no url
+    { id: undefined, url: 'https://x.com' }, // no tab id to target
+  ]) {
+    await click(tab);
+  }
+  assert.deepEqual(injected, [], 'no injection where there is no web page to inject into');
 });
 
 // ---------------------------------------------------------------------------
@@ -411,8 +539,11 @@ test('a full card renders every section', () => {
   const pills = [...node.querySelectorAll('.fx-pill-text')].map((p) => p.textContent);
   assert.deepEqual(pills, ['Toronto, Canada', 'Private', '501–1K']);
   assert.equal(node.querySelector('.fx-logo').getAttribute('src'), FULL.logo);
-  // The top-right brand mark links to this company's own Fundable page.
-  assert.equal(node.querySelector('.fx-brand').href, 'https://www.tryfundable.ai/company/wealthsimple');
+  // The header no longer carries a brand mark — the close control owns the
+  // corner, and the Fundable link lives in the row of link icons.
+  assert.equal(node.querySelector('.fx-brand'), null, 'no duplicate Fundable mark in the header');
+  const fundable = [...node.querySelectorAll('.fx-ico')].find((a) => a.getAttribute('aria-label') === 'Fundable');
+  assert.equal(fundable.href, 'https://www.tryfundable.ai/company/wealthsimple');
 });
 
 // FULL has website, linkedin, crunchbase and a guru_permalink but null
@@ -617,8 +748,7 @@ test('unparseable dates and currencies are dropped, not rendered raw', () => {
 
 test('card text is set as text, so a hostile name cannot inject markup', () => {
   const node = render({ name: '<img src=x onerror=alert(1)>' });
-  // Scoped to the name: the header also holds the bundled brand <img>, which is
-  // ours, not injected. A hostile name must never become a node under .fx-name.
+  // A hostile name must never become a node under .fx-name — it stays text.
   assert.equal(node.querySelector('.fx-name img'), null);
   assert.equal(node.querySelector('.fx-name').textContent, '<img src=x onerror=alert(1)>');
 });

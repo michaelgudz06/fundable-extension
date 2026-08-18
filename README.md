@@ -1,13 +1,15 @@
 # Fundable Chrome Extension
 
 You're on a company's website, LinkedIn, or Crunchbase page. You click the Fundable icon
-in the toolbar and a popup tells you who they are and what they raised.
+in the toolbar and a card slides in at the top-right telling you who they are and what
+they raised.
 
 ```
 extension/        MV3, plain JS, no build step
   manifest.json
   background.js   every network call in the extension
-  popup.html      the popup shell
+  inject.js       mounts the overlay iframe on click; no network
+  popup.html      the overlay card shell
   popup.js        card rendering, zero network calls
   resolver.js     URL -> identifier, plus the deny list
   panel.css       Fundable design tokens
@@ -16,22 +18,31 @@ proxy/            Next.js on Vercel — holds the Fundable API key
 test/             node --test
 ```
 
-There is no content script and nothing is injected into any web page. Earlier versions
-put a pill in the top-right corner of every https page; that is gone.
+The card is a transparent iframe, injected only when you click the icon — not a declared
+content script, and not the always-on pill earlier versions put on every https page (that
+pill is gone). Clicking the action fires `chrome.action.onClicked` (there is no
+`default_popup`), and `background.js` runs `inject.js` into the active tab with
+`chrome.scripting.executeScript` under `activeTab` — this tab only, on click only, no
+broad host permission. `inject.js` mounts a transparent `<iframe src=popup.html>`; the
+card is a cross-origin extension page, so its DOM never touches the host page. A toolbar
+popup can't have transparent rounded corners — Chrome paints it opaque and rectangular —
+which is why the card is an overlay. A second click toggles it off.
 
 ## The one hard requirement
 
-**Every `fetch` happens in `background.js`. The popup makes none, ever.**
+**Every `fetch` happens in `background.js`. `popup.js` and `inject.js` make none, ever.**
 
-This started as a privacy rule: requests issued from a content script appear in the
+This started as a privacy rule: requests issued from page-side script appear in the
 inspected page's DevTools Network tab, and requests issued from a service worker do not.
-The content script is gone, so the leak is gone with it — a popup is an extension page and
-its requests are invisible to every web page. The rule stays anyway, because one file
-owning the network is one place to audit, one place the proxy origin is named, and one
-place `host_permissions` has to match.
+The card runs in a cross-origin extension iframe now, so its requests would already be
+invisible to the host page — but the rule stays anyway, because one file owning the
+network is one place to audit, one place the proxy origin is named, and one place
+`host_permissions` has to match. `inject.js`, the one file that does touch the host page,
+issues no request at all; it only mounts the frame. Tests enforce the no-network rule on
+both `popup.js` and `inject.js`.
 
-`background.js` fetches `/api/logo?domain=` itself and hands the popup a `data:` URL, so
-the proxy origin never appears in the popup's markup either.
+`background.js` fetches `/api/logo?domain=` itself and hands the card a `data:` URL, so
+the proxy origin never appears in the card's markup either.
 
 The API key itself never reaches the extension: it lives in Vercel env vars, and the
 proxy returns only trimmed card JSON.
@@ -41,8 +52,8 @@ proxy returns only trimmed card JSON.
 `popup.js` sends messages; `background.js` answers.
 
 ```js
-// once per popup open, against the active tab's URL (activeTab grants access,
-// because opening the popup is a user invocation)
+// once per overlay open, against the active tab's URL (activeTab grants access,
+// because clicking the icon is a user invocation)
 { type: 'init', url }          -> { identifier: {kind, value} | null }
 
 { type: 'lookup', identifier } -> { found: true, card }
@@ -51,15 +62,16 @@ proxy returns only trimmed card JSON.
 ```
 
 `identifier: null` means there's no card to show here — deny-listed or unrecognised. The
-popup renders "We're working on adding this company".
+card renders "We're working on adding this company".
 
-A popup is a fresh document each time it opens, so there is no SPA navigation to follow
-and no stale-response race to guard: one open, one lookup, then it's gone.
+The overlay iframe is a fresh document each time it's mounted, so there is no SPA
+navigation to follow and no stale-response race to guard: one open, one lookup, then a
+second click (or the close button) tears it down.
 
 ## PP Mori
 
 `panel.css` loads PP Mori with a plain `@font-face` against Fundable's CDN. That is fine
-here — the popup is an extension page, so the font request comes from
+here — the card is a cross-origin extension page, so the font request comes from
 `chrome-extension://` and touches no web page. (Inside the old shadow-root panel it was
 not: Chrome ignores an `@font-face` declared in a shadow root outright, and registering
 one on the host document would have made the *page* fetch the file.)
@@ -116,6 +128,6 @@ orphans an existing Web Store listing.
 
 ## Known limits
 
-- The popup refetches every time it opens. Cheap: the proxy caches cards in Redis for 24h.
+- The overlay refetches every time it opens. Cheap: the proxy caches cards in Redis for 24h.
 - Amounts are formatted as plain USD. If the proxy ever switches to millions, the
   formatter in `popup.js` has to switch with it.
