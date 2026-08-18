@@ -588,12 +588,13 @@ test('a full card renders every section', () => {
   assert.equal(fundable.href, 'https://www.tryfundable.ai/company/wealthsimple');
 });
 
-// FULL has website, linkedin, crunchbase and a guru_permalink but null
-// twitter/facebook, so the row renders exactly those four, in LINKS order. Links
-// are icon anchors now, identified by their aria-label.
+// FULL has linkedin, crunchbase, website and a guru_permalink but null
+// twitter/facebook/pitchbook, so the row renders exactly those four, in LINKS
+// order (linkedin, crunchbase, website, fundable). Links are icon anchors now,
+// identified by their aria-label.
 test('only non-null links render, as labelled icon anchors', () => {
   const labels = [...render(FULL).querySelectorAll('.fx-ico')].map((a) => a.getAttribute('aria-label'));
-  assert.deepEqual(labels, ['Website', 'LinkedIn', 'Crunchbase', 'Fundable']);
+  assert.deepEqual(labels, ['LinkedIn', 'Crunchbase', 'Website', 'Fundable']);
 });
 
 test('links open in a new tab without leaking the referrer window', () => {
@@ -684,17 +685,41 @@ test('the investors section is headed in both the list and the note state', () =
   assert.equal(section.querySelector('.fx-investor'), null, 'no rows when there are no names');
 });
 
-// A long list previews the first few and holds the rest behind one button that
-// reveals them in place. FULL has only two investors, so this needs its own card.
-test('a long investor list previews the first few behind a Show more button', () => {
+// A long list scrolls inside a height-capped region rather than growing the card,
+// so the overlay is one fixed size and expanding it never pulls the host page.
+// Every investor renders up front; the cap and overflow live in panel.css. FULL
+// has only two investors, so this needs its own card. The old "Show more" button
+// is gone — it grew the card, which is the exact behaviour being removed here.
+test('a long investor list renders every row in a scroll region, not a Show more button', () => {
   const many = Array.from({ length: 7 }, (_, i) => ({ name: `Fund ${i + 1}` }));
   const section = render({ ...FULL, investors: many }).querySelector('.fx-investors');
-  assert.equal(section.querySelectorAll('.fx-investor').length, 5, 'only the preview shows first');
-  const more = section.querySelector('.fx-more');
-  assert.equal(more.textContent, 'Show more');
-  more.click();
-  assert.equal(section.querySelectorAll('.fx-investor').length, 7, 'the rest reveal in place');
-  assert.equal(section.querySelector('.fx-more'), null, 'the button is gone once used');
+  const scroll = section.querySelector('.fx-investor-list');
+  assert.ok(scroll, 'rows live in a .fx-investor-list scroll region');
+  assert.equal(scroll.querySelectorAll('.fx-investor').length, 7, 'every investor renders up front');
+  assert.equal(section.querySelector('.fx-more'), null, 'no Show more button — the region scrolls instead');
+});
+
+// The scroll region is only half the fix — the JS builds the container, the CSS
+// caps it. jsdom can't measure layout, so pin the cap on the rule text: without
+// max-height + overflow-y the card grows with the list again and the render test
+// above still passes, so this is the guard that actually holds Change 1 in place.
+test('the investor list rule caps its height and scrolls, so the card cannot grow', () => {
+  const block = rules(read('panel.css')).match(/\.fx-investor-list\s*\{([^}]*)\}/)?.[1];
+  assert.ok(block, '.fx-investor-list rule is missing — the list would grow the card');
+  assert.match(block, /max-height:\s*\d+px/, 'needs a height cap');
+  assert.match(block, /overflow-y:\s*auto/, 'needs to scroll rather than clip or grow');
+});
+
+// The list is capped to a scroll region, so only the first few show without
+// scrolling — the lead has to be one of them. This fixture puts the lead second
+// in API order, so it fails if investors() renders in API order (as it did before).
+test('a lead investor is pulled to the front, above an earlier non-lead', () => {
+  const card = {
+    name: 'X',
+    investors: [{ name: 'Follower' }, { name: 'The Lead', lead_investor: true }],
+  };
+  const names = [...render(card).querySelectorAll('.fx-investor-name')].map((n) => n.textContent);
+  assert.deepEqual(names, ['The Lead', 'Follower'], 'the lead sorts ahead of an earlier non-lead');
 });
 
 test('every section disappears when its data is missing', () => {
@@ -805,7 +830,11 @@ test('card text is set as text, so a hostile name cannot inject markup', () => {
 // the actual protocol rather than a second description of it.
 // ---------------------------------------------------------------------------
 
-const MISS = "We're working on adding this company";
+const MISS = "Sorry, this company isn't available yet — we'll work on adding it.";
+// Shown when the URL is not a company page at all (non-http, or the resolver
+// returns null for a random/deny-listed site). Distinct from MISS, which promises
+// coverage and so may only follow a page that actually resolved to a company.
+const NO_PAGE = "Sorry, we couldn't find a company on this page.";
 
 function openPopup({ url = 'https://www.linkedin.com/company/stripe', reachable = true } = {}) {
   let sent = 0;
@@ -814,11 +843,13 @@ function openPopup({ url = 'https://www.linkedin.com/company/stripe', reachable 
     sent++;
     return reachable ? ask(message) : Promise.reject(new Error('Extension context invalidated'));
   };
-  // Pre-filled exactly as popup.html ships it, so "replaced the loading state"
-  // is a real assertion and not a vacuous one.
+  // Pre-filled exactly as popup.html ships it — the loading state carries the
+  // shared Möbius mark, so "replaced the loading state" is a real assertion and
+  // the miss/error states have a mark to clone.
   const panel = document.createElement('div');
   const loading = document.createElement('div');
   loading.className = 'fx-loading';
+  loading.innerHTML = '<svg class="fx-mark"></svg>';
   panel.append(loading);
   return { panel, done: popup.open(panel), sends: () => sent };
 }
@@ -835,13 +866,16 @@ test('the active tab resolves to a card, which replaces the loading state', asyn
   assert.equal(sends(), 2, 'one init, one lookup, and that is the whole popup');
 });
 
-test('a tab the resolver denies never reaches the network', async () => {
+// A deny-listed page resolves to no identifier, so it is NO_PAGE, not MISS: it
+// must not be told Fundable is "working on adding" it — there is no company here,
+// and the promise belongs only to a page that resolved and came back not-found.
+test('a tab the resolver denies is no-company, and never reaches the network', async () => {
   route = () => {
     throw new Error('a deny-listed page must not be looked up');
   };
   const { panel, done, sends } = openPopup({ url: 'https://mail.google.com/mail/u/0' });
   await done;
-  assert.equal(panel.querySelector('.fx-miss').textContent, MISS);
+  assert.equal(panel.querySelector('.fx-miss').textContent, NO_PAGE);
   assert.equal(sends(), 1, 'no identifier, no lookup');
 });
 
@@ -850,6 +884,7 @@ test('a company Fundable has never heard of is a miss, not an error', async () =
   const { panel, done } = openPopup();
   await done;
   assert.equal(panel.querySelector('.fx-miss').textContent, MISS);
+  assert.ok(panel.querySelector('.fx-miss .fx-mark'), 'the miss state clones in the Fundable mark');
 });
 
 test('an error code becomes its own quiet line of copy', async () => {
@@ -882,7 +917,7 @@ test('a page that cannot hold a company says so, rather than claiming coverage',
   for (const url of ['chrome://newtab/', 'about:blank', 'file:///Users/x/notes.txt', '']) {
     const { panel, done, sends } = openPopup({ url });
     await done;
-    assert.equal(panel.querySelector('.fx-miss').textContent, 'No company on this page');
+    assert.equal(panel.querySelector('.fx-miss').textContent, NO_PAGE);
     assert.equal(sends(), 0, `${url}: nothing to resolve, so nothing is asked`);
   }
 });

@@ -8,12 +8,14 @@
 // that ownership is how the rule rots. panel.css is loaded by <link>, which the
 // extension page fetches from its own package.
 
-const MISS = "We're working on adding this company";
+const MISS = "Sorry, this company isn't available yet — we'll work on adding it.";
 
-// Not the same sentence as MISS: the toolbar icon is clickable on chrome://
-// pages, the New Tab page and the Web Store, where there is no company to have
-// an opinion about. See open().
-const NO_PAGE = 'No company on this page';
+// Not the same sentence as MISS, and the distinction is the whole point: MISS is
+// a promise ("we'll add this company"), so it may only be shown for a page that
+// actually resolved to a company Fundable happens not to have yet. Everything
+// else — a chrome:// page, a random site, a search result, a deny-listed page —
+// is not a company at all and must never be told it is on the roadmap. See open().
+const NO_PAGE = "Sorry, we couldn't find a company on this page.";
 
 const ERRORS = {
   rate_limited: 'Too many lookups right now. Try again in a moment.',
@@ -27,22 +29,20 @@ const ERRORS = {
 
 // "Open on…" destinations, rendered as a row of brand icons (see LINKS styling
 // in panel.css). The brand marks are the exact Simple Icons glyphs react-icons/si
-// ships (SiLinkedin, SiX, SiFacebook, SiCrunchbase); Crunchbase is included by
-// request, PitchBook stays off. The label is the aria-label and tooltip, so it
-// carries brand casing ("LinkedIn") a derived one would flatten.
+// ships (SiLinkedin, SiX, SiFacebook, SiCrunchbase). react-icons/si has no
+// PitchBook mark, so that one is a line "book" glyph (ICONS.pitchbook). The label
+// is the aria-label and tooltip, so it carries brand casing ("LinkedIn") a derived
+// one would flatten. The order here is the render order of the row.
 // [key on card.links, icon name, label].
 const LINKS = [
-  ['website', 'globe', 'Website'],
   ['linkedin', 'linkedin', 'LinkedIn'],
   ['twitter', 'x', 'X'],
-  ['facebook', 'facebook', 'Facebook'],
   ['crunchbase', 'crunchbase', 'Crunchbase'],
+  ['pitchbook', 'pitchbook', 'PitchBook'],
+  ['facebook', 'facebook', 'Facebook'],
+  ['website', 'globe', 'Website'],
   ['fundable', 'fundable', 'Fundable'],
 ];
-
-// Investor rows shown before the "Show N more" button. Leads sort first, so the
-// preview is the ones that matter; the rest are one click away.
-const INVESTOR_PREVIEW = 5;
 
 // --- formatting -------------------------------------------------------------
 
@@ -163,18 +163,32 @@ const ICONS = {
     d: ['M21.6 0H2.4A2.41 2.41 0 0 0 0 2.4v19.2A2.41 2.41 0 0 0 2.4 24h19.2a2.41 2.41 0 0 0 2.4-2.4V2.4A2.41 2.41 0 0 0 21.6 0zM7.045 14.465A2.11 2.11 0 0 0 9.84 13.42h1.66a3.69 3.69 0 1 1 0-1.75H9.84a2.11 2.11 0 1 0-2.795 2.795zm11.345.845a3.55 3.55 0 0 1-1.06.63 3.68 3.68 0 0 1-3.39-.38v.38h-1.51V5.37h1.5v4.11a3.74 3.74 0 0 1 1.8-.63H16a3.67 3.67 0 0 1 2.39 6.46zm-.223-2.766a2.104 2.104 0 1 1-4.207 0 2.104 2.104 0 0 1 4.207 0z'],
   },
   globe: { d: ['M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z', 'M2 12h20', 'M12 2a15.3 15.3 0 0 1 0 20', 'M12 2a15.3 15.3 0 0 0 0 20'] },
+  // react-icons/si ships no PitchBook mark, so a line "book" glyph stands in for
+  // it (Lucide book, matching the other line icons — pin, users, building).
+  pitchbook: { d: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'] },
   pin: { d: ['M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z', 'M15 10a3 3 0 1 0-6 0 3 3 0 0 0 6 0z'] },
   users: {
     d: ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8', 'M22 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75'],
   },
   building: { d: ['M5 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18', 'M3 22h18', 'M9 6h.01M13 6h.01M9 10h.01M13 10h.01M9 14h.01M13 14h.01'] },
+  fundable: {
+    fill: true,
+    viewBox: '0 0 218 220',
+    // The Möbius mark inline (same paths as popup.html's loading .fx-mark),
+    // so it inherits the link row's currentColor — muted grey, ink on hover —
+    // like every sibling, instead of standing out as a solid-black PNG.
+    d: [
+      'M107.211 0H111.219L119.658 0.626673L125.777 1.46224L131.262 2.50669L139.279 4.5956L146.663 7.10229L153.203 9.81788L161.22 13.7868L165.44 16.2935L171.769 20.4713L175.355 23.1869L178.942 26.1114L181.052 27.9914L182.739 29.4536L189.702 36.347L191.178 38.0182L194.132 41.5693L196.242 44.2849L198.984 48.0449L200.461 50.3427L202.782 54.1028L204.892 57.8628L207.001 61.8317L209.955 68.3074L211.854 73.3207L214.174 80.6319L215.651 86.4809L216.706 91.912L217.55 98.1788L217.972 102.774V117.397L217.339 123.872L216.495 129.304L215.44 134.735L213.753 141.001L211.643 147.268L209.322 153.117L206.368 159.384L203.837 164.188L201.305 168.366L198.351 172.753L195.82 176.095L193.71 178.811L191.811 181.109L189.702 183.406L188.225 185.077L185.06 188.42L181.685 191.553L179.364 193.642L174.09 197.82L171.769 199.491L167.338 202.415L164.385 204.295L161.431 205.967L156.579 208.473L151.304 210.98L144.342 213.696L137.802 215.784L130.207 217.664L122.612 218.918L117.127 219.544L110.798 219.962H107.211L107 219.544V182.153L107.422 181.944L112.485 181.735L119.447 180.9L125.355 179.646L131.473 177.766L135.692 176.095L140.756 173.797L144.764 171.5L147.718 169.62L150.039 167.948L152.992 165.651L155.735 163.353L158.899 160.428L161.853 157.295L163.963 154.788L166.494 151.446L168.604 148.313L171.136 143.926L173.879 138.286L176.199 132.228L177.676 127.215L178.942 120.948L179.575 114.89V105.072L178.731 98.1788L177.465 92.1209L175.988 87.1076L173.879 81.6764L172.191 77.9164L169.87 73.7385L167.338 69.7696L164.596 66.0096L162.064 63.0851L160.587 61.414L155.524 56.4006L153.203 54.5206L150.672 52.4316L147.296 50.1338L143.287 47.6272L138.646 45.1205L133.583 43.0316L128.941 41.3604L123.667 39.8982L117.76 38.8537L114.384 38.4359L107 38.0182V1.04446L107.211 0Z',
+      'M106.035 37H106.455L106.666 38.4882V180.503L106.455 182.203L99.515 181.566L94.0469 180.715L88.5787 179.44L81.0074 176.889L76.8011 174.975L73.436 173.274L69.2297 170.723L66.075 168.597L62.71 166.046L59.7656 163.495L53.8768 157.542L51.9839 155.204L49.4602 152.015L47.357 148.826L45.0436 144.999L42.5198 140.109L40.2063 134.369L38.5238 129.054L37.4722 124.59L36.631 119.7L36 113.322V106.094L36.4207 100.992L37.2619 95.6767L38.5238 90.1492L41.0476 82.4957L43.361 77.3934L45.2539 73.7792L47.988 69.5273L49.6705 66.9761L51.7736 64.2124L53.6665 62.0864L56.4005 58.8975L58.714 56.5589L60.3965 55.0707L63.9719 52.0944L67.5472 49.5432L71.1226 47.2046L75.1185 44.8661L79.7455 42.7401L85.6343 40.6141L88.9993 39.5512L94.8881 38.2756L101.408 37.4252L106.035 37Z',
+    ],
+  },
 };
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 function svgIcon(name, className) {
   const spec = ICONS[name];
   const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('viewBox', spec.viewBox ?? '0 0 24 24');
   svg.setAttribute('aria-hidden', 'true');
   if (className) svg.setAttribute('class', className);
   if (spec.fill) {
@@ -248,8 +262,9 @@ function links(card) {
     if (!a) continue;
     a.setAttribute('aria-label', label);
     a.title = label;
-    // Fundable's own mark is the bundled PNG; the rest are inline brand SVGs.
-    a.append(key === 'fundable' ? Object.assign(el('img', 'fx-ico-img'), { src: 'icons/icon128.png', alt: '' }) : svgIcon(icon, 'fx-ico-svg'));
+    // Every mark is an inline currentColor SVG, Fundable's included, so the whole
+    // row shares one muted-grey palette and inks together on hover.
+    a.append(svgIcon(icon, 'fx-ico-svg'));
     row.append(a);
   }
   return row.childNodes.length ? row : null;
@@ -312,7 +327,13 @@ function round(card) {
 }
 
 function investors(card) {
-  const list = (card.investors ?? []).filter((investor) => investor?.name);
+  // Leads to the front, stably (API order holds within each group). The list is
+  // capped to a scroll region below, so only the first few show without
+  // scrolling — the investor who led the round has to be one of them. Neither the
+  // API nor the proxy orders them, so it happens here.
+  const list = (card.investors ?? [])
+    .filter((investor) => investor?.name)
+    .sort((a, b) => (b.lead_investor ? 1 : 0) - (a.lead_investor ? 1 : 0));
 
   // stats.num_investors and investors[] are separately sourced and disagree in
   // both directions — Stripe says 26 and ships none, Telli says 2 and ships
@@ -333,29 +354,22 @@ function investors(card) {
     return wrap;
   }
 
-  const rows = list.map((investor) => {
+  // Every investor renders, but inside a height-capped scroll region
+  // (.fx-investor-list in panel.css) rather than behind a "Show more" button that
+  // grew the card. Leads are pulled to the front (above), so the names that
+  // matter stay visible without scrolling, and the card never grows past that cap
+  // no matter how many investors a company has — a long list (Stripe ships 16)
+  // scrolls in place instead of growing the card and pulling the host page.
+  const listEl = el('div', 'fx-investor-list');
+  for (const investor of list) {
     const row = el('div', 'fx-investor');
     const logo = logoImg('fx-investor-logo', investor.logo, investor.name);
     if (logo) row.append(logo);
     row.append(el('span', 'fx-investor-name', investor.name));
     if (investor.lead_investor) row.append(el('span', 'fx-lead-badge', 'Lead'));
-    return row;
-  });
-
-  wrap.append(...rows.slice(0, INVESTOR_PREVIEW));
-
-  // A long list (Stripe ships 16) turns the card into a scroll. Show the first
-  // few — leads already sort first — and hold the rest behind one button that
-  // reveals them all in place.
-  const rest = rows.slice(INVESTOR_PREVIEW);
-  if (rest.length) {
-    const more = el('button', 'fx-more', 'Show more');
-    more.type = 'button';
-    more.addEventListener('click', () => {
-      more.replaceWith(...rest);
-    });
-    wrap.append(more);
+    listEl.append(row);
   }
+  wrap.append(listEl);
   return wrap;
 }
 
@@ -376,13 +390,26 @@ const send = (message) => chrome.runtime.sendMessage(message).catch(() => null);
 export async function open(panel) {
   const show = (...nodes) => panel.replaceChildren(...nodes);
 
+  // The Fundable mark already sits in the panel (popup.html's loading state);
+  // clone it so the miss and error states are the same branded card — mark
+  // centred over a line of copy — not a bare sentence in a box. Captured before
+  // the first show() detaches the original. Under test the fake panel ships no
+  // mark, and the guard simply leaves it out.
+  const mark = panel.querySelector('.fx-mark');
+  const state = (className, message) => {
+    const node = el('div', className);
+    if (mark) node.append(mark.cloneNode(true));
+    node.append(el('p', 'fx-state-text', message));
+    return node;
+  };
+
   const [tab] = (await chrome.tabs.query({ active: true, currentWindow: true })) ?? [];
   // The action is enabled on every tab now, not just the https pages the old
   // content script matched. On a chrome:// page, the New Tab page or the Web
   // Store, activeTab grants nothing and there is no URL to read — which is not
   // a company Fundable is "working on adding", it is not a company at all.
   const url = tab?.url ?? '';
-  if (!/^https?:\/\//i.test(url)) return show(el('div', 'fx-miss', NO_PAGE));
+  if (!/^https?:\/\//i.test(url)) return show(state('fx-miss', NO_PAGE));
 
   const init = await send({ type: 'init', url });
   // No answer at all is a transport failure — an extension reload invalidates
@@ -390,17 +417,21 @@ export async function open(panel) {
   // answer of `null`, which is the resolver saying this page has no company:
   // reporting a broken worker as "we're adding this company" sends the reader
   // away believing a fact that was never checked.
-  if (!init) return show(el('div', 'fx-error', ERRORS.network));
+  if (!init) return show(state('fx-error', ERRORS.network));
   // background.js answers a throw in *either* handler with {error}, so init can
   // carry one too. Unchecked it has no `identifier` and falls into the miss line
   // below — the same false claim the guard above exists to prevent.
-  if (init.error) return show(el('div', 'fx-error', ERRORS[init.error] ?? ERRORS.unavailable));
-  if (!init.identifier) return show(el('div', 'fx-miss', MISS));
+  if (init.error) return show(state('fx-error', ERRORS[init.error] ?? ERRORS.unavailable));
+  // A null identifier is the resolver saying this URL is not a company page — a
+  // random site, a search page, or one on the deny list. That is NO_PAGE, not
+  // MISS: MISS below promises to add the company, and there is no company here to
+  // add. Only a page that resolved and then came back `found:false` earns MISS.
+  if (!init.identifier) return show(state('fx-miss', NO_PAGE));
 
   const res = await send({ type: 'lookup', identifier: init.identifier });
-  if (!res) return show(el('div', 'fx-error', ERRORS.network));
-  if (res.error) return show(el('div', 'fx-error', ERRORS[res.error] ?? ERRORS.unavailable));
-  if (!res.found) return show(el('div', 'fx-miss', MISS));
+  if (!res) return show(state('fx-error', ERRORS.network));
+  if (res.error) return show(state('fx-error', ERRORS[res.error] ?? ERRORS.unavailable));
+  if (!res.found) return show(state('fx-miss', MISS));
   show(...renderCard(res.card));
 }
 
@@ -417,8 +448,10 @@ export function wireOverlay() {
   const close = () => window.parent.postMessage('fundable-close', '*');
   document.addEventListener('keydown', (e) => e.key === 'Escape' && close());
 
-  // The card's own height drives the iframe's, remeasured whenever it changes
-  // (a lookup resolving, "Show more" expanding the investor list).
+  // The card's own height drives the iframe's, remeasured whenever it changes —
+  // in practice once, when the lookup resolves. The investor list scrolls inside
+  // a height-capped region rather than growing the card, so expanding it never
+  // resizes the frame or pulls the host page.
   const postSize = () => {
     const height = Math.ceil(document.body.getBoundingClientRect().height);
     if (height) window.parent.postMessage({ type: 'fundable-size', height }, '*');

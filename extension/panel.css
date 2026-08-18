@@ -206,15 +206,6 @@ a {
   height: 18px;
 }
 
-/* The Fundable mark is a colour PNG — a green Möbius on transparent — so the
-   row's currentColor does not tint it. It reads green among the muted line
-   marks, which is intended: it is the one brand-coloured glyph in the row. */
-.fx-ico-img {
-  display: block;
-  width: 18px;
-  height: 18px;
-}
-
 /* Two dividers, not four. The card has three zones — identity, stats, and the
    funding story — so only the tiles and the round rule a line above themselves.
    The investor list belongs to the round (one story, so grouped by whitespace,
@@ -320,6 +311,20 @@ a {
   gap: 8px;
 }
 
+/* The rows live in their own height-capped, scrollable region so the card never
+   grows past a fixed cap no matter how many investors a company has: a long list
+   scrolls in place instead of growing the card and pulling the host page under the
+   overlay. ~5 rows before it scrolls; leads are pulled to the front, so the names
+   that matter show without scrolling. The heading stays outside, so only the rows
+   scroll. */
+.fx-investor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
 /* Carried by the investors section when the card has a count but no names, so
    the section says why it is empty rather than disappearing under a tile that
    claims 26. Inherits --fx-muted from the body (5.49:1 on the surface). */
@@ -365,29 +370,19 @@ a {
   line-height: 14px;
 }
 
-/* "Show N more" — a quiet text button, not a filled control, so it recedes into
-   the list until wanted. Sits as a flex item in .fx-investors, so the column's
-   8px gap already spaces it off the last row. */
-.fx-more {
-  align-self: flex-start;
-  border: 0;
-  background: none;
-  padding: 0;
-  font: inherit;
-  font-size: 12px;
-  color: var(--fx-ink);
-  cursor: pointer;
-}
-
-.fx-more:hover {
-  text-decoration: underline;
-}
-
 /* States */
 
+/* Miss and error are branded states, not bare text: the Möbius mark (cloned in
+   by popup.js) centred over a line of copy, so an unknown company still reads as
+   the Fundable card rather than a rectangle with a sentence in it. The mark keeps
+   its own ink colour; only the copy under an error goes red. */
 .fx-miss,
 .fx-error {
-  padding: 24px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 32px 16px;
   text-align: center;
   line-height: 1.5;
 }
@@ -407,9 +402,10 @@ a {
   padding: 44px 16px;
 }
 
-/* The inline Möbius mark (see popup.html), floating on the card — no tile, no
-   border-radius. currentColor paints it in the card's ink. */
-.fx-loading-logo {
+/* The inline Möbius mark (see popup.html) — no tile, floating on the card in its
+   ink via currentColor. Shared by the loading, miss and error states: popup.js
+   clones this node into each, so every state is the same branded card. */
+.fx-mark {
   width: 40px;
   height: 40px;
   color: var(--fx-ink);

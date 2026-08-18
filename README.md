@@ -61,8 +61,13 @@ proxy returns only trimmed card JSON.
                                 | { error: 'rate_limited' | 'unavailable' | 'network' }
 ```
 
-`identifier: null` means there's no card to show here — deny-listed or unrecognised. The
-card renders "We're working on adding this company".
+`identifier: null` means this isn't a company page at all — a random site, a search page,
+or a deny-listed one. The card says exactly that ("Sorry, we couldn't find a company on
+this page.") and, crucially, does *not* promise coverage. The coverage promise ("Sorry,
+this company isn't available yet — we'll work on adding it.") is shown only when a lookup
+resolves and comes back `{ found: false }` — a page that really is a company Fundable
+doesn't have yet. The two must never be swapped: a random page told "we'll add it" is a
+claim that was never checked.
 
 The overlay iframe is a fresh document each time it's mounted, so there is no SPA
 navigation to follow and no stale-response race to guard: one open, one lookup, then a
