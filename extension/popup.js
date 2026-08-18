@@ -406,15 +406,15 @@ export async function open(panel) {
 
 // --- overlay plumbing --------------------------------------------------------
 // popup.html renders inside the transparent iframe inject.js mounts, not a
-// toolbar popup. Two things a popup never needed: a close control, and telling
-// the host iframe how tall to be so the card is neither clipped nor boxed in dead
-// space. Both are guarded on actually being framed, so importing this module
-// under test (where window.parent === window) does nothing.
+// toolbar popup. Two things a popup never needed: a way to dismiss (there is no
+// visible close button — Esc, or a second click on the toolbar icon, tears the
+// overlay down), and telling the host iframe how tall to be so the card is
+// neither clipped nor boxed in dead space. Both are guarded on actually being
+// framed, so importing this module under test (window.parent === window) is inert.
 export function wireOverlay() {
   if (typeof window === 'undefined' || window.parent === window) return;
 
   const close = () => window.parent.postMessage('fundable-close', '*');
-  document.querySelector('.fx-close')?.addEventListener('click', close);
   document.addEventListener('keydown', (e) => e.key === 'Escape' && close());
 
   // The card's own height drives the iframe's, remeasured whenever it changes

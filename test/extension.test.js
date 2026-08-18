@@ -178,14 +178,14 @@ test('manifest injects the overlay on click, declares no content script, and pin
 
 // The shell is the entry point and nothing else covers it: a renamed file or a
 // dropped type="module" would leave a permanently blank overlay with a green suite.
-test('popup.html loads the packaged stylesheet, the module, and a close control', () => {
+test('popup.html loads the packaged stylesheet and the module, with no close button', () => {
   const html = read('popup.html');
   assert.match(html, /<link rel="stylesheet" href="panel\.css"/);
   assert.match(html, /<script type="module" src="popup\.js"/);
   assert.match(html, /class="fx-panel"/, 'popup.js renders into .fx-panel');
-  // The overlay does not dismiss on blur the way a popup did, so the shell ships
-  // the close control; wireOverlay() binds it to a postMessage the frame acts on.
-  assert.match(html, /class="fx-close"/, 'the overlay needs a close control in its shell');
+  // No visible close button: the overlay is dismissed with Esc or a second click
+  // on the toolbar icon (inject.js toggles it off), so the shell ships no fx-close.
+  assert.doesNotMatch(html, /fx-close/, 'the X close button was removed');
   for (const file of ['panel.css', 'popup.js']) assert.ok(existsSync(path(file)));
 });
 
@@ -539,8 +539,8 @@ test('a full card renders every section', () => {
   const pills = [...node.querySelectorAll('.fx-pill-text')].map((p) => p.textContent);
   assert.deepEqual(pills, ['Toronto, Canada', 'Private', '501–1K']);
   assert.equal(node.querySelector('.fx-logo').getAttribute('src'), FULL.logo);
-  // The header no longer carries a brand mark — the close control owns the
-  // corner, and the Fundable link lives in the row of link icons.
+  // The header carries no brand mark — the Fundable link lives in the row of
+  // link icons, so a second Fundable mark in the header would just duplicate it.
   assert.equal(node.querySelector('.fx-brand'), null, 'no duplicate Fundable mark in the header');
   const fundable = [...node.querySelectorAll('.fx-ico')].find((a) => a.getAttribute('aria-label') === 'Fundable');
   assert.equal(fundable.href, 'https://www.tryfundable.ai/company/wealthsimple');
