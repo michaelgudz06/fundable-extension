@@ -40,6 +40,10 @@
   --fx-muted: #696969;
   --fx-surface: #fff;
   --fx-fill: #F3F4F6;
+  /* The popup backdrop behind the card — deliberately a real grey, not a near-
+     white, so the rounded white card reads as floating on a surface rather than
+     as a sharp-cornered frame around it. */
+  --fx-bg: #E7E8EA;
   --fx-line: #E5E7EB;
   --fx-ring: #F4F6F8;
   --fx-green: #00A76F;
@@ -72,13 +76,14 @@
    clipping nothing while the document scrolls anyway. Both were dropped rather
    than left here describing a container that never existed. */
 
-/* Full-bleed, not a floating card. A Chrome popup is a rectangular window; a
-   rounded card inset inside it just exposes the window's own background as a
-   sharp-cornered frame around the card. Going edge-to-edge lets the content
-   take the window's corners instead — which Chrome already rounds on macOS. */
+/* A rounded white card floating on a grey backdrop. The 10px of --fx-bg around
+   the card is what makes the rounded corners read; the popup window itself is
+   rectangular (Chrome draws it), so the grey — not white — is what its corners
+   show, which keeps them from looking like a broken frame. */
 body {
   width: 360px;
-  background: var(--fx-surface);
+  background: var(--fx-bg);
+  padding: 10px;
   font-family: 'PP Mori', Helvetica, Arial, sans-serif;
   font-size: 13px;
   line-height: 1.45;
@@ -96,6 +101,9 @@ a {
 .fx-panel {
   display: block;
   padding: 16px;
+  background: var(--fx-surface);
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 8px 24px rgba(16, 24, 40, 0.08);
 }
 
 /* Header — logo in column 1 spanning both text rows, name and meta stacked in
@@ -159,37 +167,70 @@ a {
   overflow-wrap: break-word;
 }
 
-.fx-meta {
-  grid-column: 2;
-  font-size: 12px;
-  line-height: 1.4;
-}
+/* Metadata pills — location · status · headcount, the way Fundable's own card
+   shows them: a soft grey pill with a line icon and muted text. */
 
-/* Link chips — sized to content, so one chip and six both look intentional. */
-
-.fx-chips {
+.fx-metapills {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 14px;
+  margin-top: 10px;
 }
 
-/* Outline, not a solid grey fill: a row of filled blocks alongside the stat
-   grid made the card read like a form. A hairline pill recedes to structure. */
-.fx-chip {
+.fx-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 10px;
+  gap: 5px;
+  padding: 3px 9px;
   border-radius: 999px;
-  border: 1px solid var(--fx-line);
+  background: var(--fx-fill);
   font-size: 12px;
-  line-height: 17px;
+  line-height: 16px;
+  color: var(--fx-muted);
 }
 
-.fx-chip:hover {
-  border-color: var(--fx-muted);
+.fx-pill-icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+.fx-pill-text {
+  white-space: nowrap;
+}
+
+/* Link row — brand-mark icons, muted at rest and inking on hover, so five links
+   sit in the space one labelled pill used to take. */
+
+.fx-links {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.fx-ico {
+  display: inline-flex;
+  color: var(--fx-muted);
+}
+
+.fx-ico:hover {
   color: var(--fx-ink);
+}
+
+.fx-ico-svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+/* The Fundable mark is a full-colour PNG, so the row's currentColor does not
+   tint it; a hairline keeps its white ground from vanishing into the card. */
+.fx-ico-img {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
 }
 
 /* Two dividers, not four. The card has three zones — identity, stats, and the
@@ -275,8 +316,8 @@ a {
 
 /* Live renders card links as plain text; the ink rest state is a deliberate
    departure. A source link pixel-identical to the date beside it is a feature
-   nobody will ever click, and every other link here already carries a rest
-   affordance (.fx-chip its fill, .fx-footer its ink), so this reuses an
+   nobody will ever click, and the other links here already carry a rest
+   affordance (.fx-ico its muted mark, hover to ink), so this reuses an
    established pattern rather than inventing one. */
 
 .fx-round-source {
@@ -364,7 +405,6 @@ a {
 
 /* States */
 
-.fx-loading,
 .fx-miss,
 .fx-error {
   padding: 24px 16px;
@@ -372,14 +412,36 @@ a {
   line-height: 1.5;
 }
 
-.fx-loading {
-  animation: fx-pulse 1.4s ease-in-out infinite;
-}
-
 .fx-error {
   color: var(--fx-red-text);
 }
 
-@keyframes fx-pulse {
-  50% { opacity: .45; }
+/* Loading — the Fundable mark sits where the company logo will land, with a
+   spinner beneath it, so the popup opens as a branded card that is visibly
+   working rather than an empty "Loading…" box. */
+.fx-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 44px 16px;
+}
+
+.fx-loading-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 11px;
+}
+
+.fx-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--fx-line);
+  border-top-color: var(--fx-muted);
+  border-radius: 50%;
+  animation: fx-spin 0.7s linear infinite;
+}
+
+@keyframes fx-spin {
+  to { transform: rotate(360deg); }
 }

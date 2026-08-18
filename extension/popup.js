@@ -25,14 +25,17 @@ const ERRORS = {
   network: 'Could not reach Fundable.',
 };
 
-// "Open on…" destinations. Fundable is one of them — its own profile is the
-// card's home base — so the aggregators it competes with (Crunchbase, PitchBook)
-// and Facebook were dropped rather than sending people off to a rival's page.
-const CHIPS = [
-  ['website', 'Website'],
-  ['linkedin', 'LinkedIn'],
-  ['twitter', 'Twitter'],
-  ['fundable', 'Fundable'],
+// "Open on…" destinations, rendered as a row of brand icons (see LINKS styling
+// in panel.css). Fundable's own profile is one of them; the aggregators it
+// competes with — Crunchbase, PitchBook — stay off. The label is the aria-label
+// and tooltip, so it carries brand casing ("LinkedIn") a derived one would flatten.
+// [key on card.links, icon name, label].
+const LINKS = [
+  ['website', 'globe', 'Website'],
+  ['linkedin', 'linkedin', 'LinkedIn'],
+  ['twitter', 'twitter', 'Twitter'],
+  ['facebook', 'facebook', 'Facebook'],
+  ['fundable', 'fundable', 'Fundable'],
 ];
 
 // Investor rows shown before the "Show N more" button. Leads sort first, so the
@@ -87,6 +90,15 @@ const count = (value) => {
     : null;
 };
 
+// "1001-5000" -> "1K–5K", to match the headcount pill on Fundable's own card.
+// Compacts each number in the bucket and leaves small ones and any "+" alone.
+const compactInt = (n) =>
+  new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+function abbrevRange(text) {
+  if (!text) return null;
+  return text.replace(/[\d,]+/g, (m) => compactInt(Number(m.replace(/,/g, '')))).replace(/-/g, '–');
+}
+
 function when(value) {
   if (!value) return null;
   const date = new Date(value);
@@ -128,6 +140,54 @@ function logoImg(className, src, alt) {
   return img;
 }
 
+// Inline SVGs — the icon row and metadata pills draw locally, no network. `fill`
+// entries are brand marks painted in the current colour; the rest are line icons
+// stroked in it. Fundable's own mark is the bundled PNG, handled in links().
+const ICONS = {
+  linkedin: {
+    fill: true,
+    d: ['M20.45 20.45h-3.55v-5.57c0-1.33-.03-3.04-1.85-3.04-1.86 0-2.14 1.45-2.14 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.46v6.28zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45C23.2 24 24 23.23 24 22.27V1.73C24 .77 23.2 0 22.22 0z'],
+  },
+  twitter: {
+    fill: true,
+    d: ['M18.24 2.25h3.31l-7.23 8.26 8.5 11.24H16.17l-5.21-6.82L4.99 21.75H1.68l7.73-8.84L1.25 2.25H8.08l4.71 6.23 5.45-6.23zm-1.16 17.52h1.83L7.08 4.13H5.12l11.96 15.64z'],
+  },
+  facebook: {
+    fill: true,
+    d: ['M24 12.07C24 5.44 18.63.07 12 .07S0 5.44 0 12.07c0 5.99 4.39 10.95 10.13 11.85v-8.38H7.08v-3.47h3.05V9.43c0-3.01 1.79-4.67 4.53-4.67 1.31 0 2.69.24 2.69.24v2.95h-1.51c-1.49 0-1.96.93-1.96 1.87v2.25h3.33l-.53 3.47h-2.8v8.38C19.61 23.02 24 18.06 24 12.07z'],
+  },
+  globe: { d: ['M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z', 'M2 12h20', 'M12 2a15.3 15.3 0 0 1 0 20', 'M12 2a15.3 15.3 0 0 0 0 20'] },
+  pin: { d: ['M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z', 'M15 10a3 3 0 1 0-6 0 3 3 0 0 0 6 0z'] },
+  users: {
+    d: ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8', 'M22 21v-2a4 4 0 0 0-3-3.87', 'M16 3.13a4 4 0 0 1 0 7.75'],
+  },
+  building: { d: ['M5 22V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v18', 'M3 22h18', 'M9 6h.01M13 6h.01M9 10h.01M13 10h.01M9 14h.01M13 14h.01'] },
+};
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgIcon(name, className) {
+  const spec = ICONS[name];
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  if (className) svg.setAttribute('class', className);
+  if (spec.fill) {
+    svg.setAttribute('fill', 'currentColor');
+  } else {
+    svg.setAttribute('fill', 'none');
+    svg.setAttribute('stroke', 'currentColor');
+    svg.setAttribute('stroke-width', '2');
+    svg.setAttribute('stroke-linecap', 'round');
+    svg.setAttribute('stroke-linejoin', 'round');
+  }
+  for (const d of spec.d) {
+    const path = document.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    svg.append(path);
+  }
+  return svg;
+}
+
 // --- card sections ----------------------------------------------------------
 // Every section returns null when it has nothing to show, so missing data hides
 // its element rather than rendering an empty box.
@@ -158,21 +218,46 @@ function header(card) {
   const logo = logoImg('fx-logo', card.logo, card.name);
   if (logo) node.append(logo);
   if (card.name) node.append(el('div', 'fx-name', card.name));
-  const meta = [card.region, card.ipo_status && pretty(card.ipo_status)].filter(Boolean).join(' · ');
-  if (meta) node.append(el('div', 'fx-meta', meta));
   if (card.name) node.append(brandMark(card));
   return node.childNodes.length ? node : null;
 }
 
-function chips(card) {
-  const links = { ...card.links };
-  links.website ??= card.website;
-  links.fundable = fundableUrl(card);
-  const nodes = CHIPS.map(([key, label]) => link('fx-chip', links[key], label)).filter(Boolean);
-  if (!nodes.length) return null;
-  const row = el('div', 'fx-chips');
-  row.append(...nodes);
+// Location · status · headcount as icon pills, the treatment Fundable's own card
+// uses. Headcount lived in a stat tile before; it moves here so the tiles hold
+// only money and counts.
+function metaPills(card) {
+  const items = [
+    ['pin', card.region],
+    ['building', card.ipo_status && pretty(card.ipo_status)],
+    ['users', abbrevRange(count(card.stats?.num_employees))],
+  ].filter(([, text]) => text);
+  if (!items.length) return null;
+
+  const row = el('div', 'fx-metapills');
+  for (const [icon, text] of items) {
+    const pill = el('span', 'fx-pill');
+    pill.append(svgIcon(icon, 'fx-pill-icon'), el('span', 'fx-pill-text', text));
+    row.append(pill);
+  }
   return row;
+}
+
+function links(card) {
+  const href = { ...card.links };
+  href.website ??= card.website;
+  href.fundable = fundableUrl(card);
+
+  const row = el('div', 'fx-links');
+  for (const [key, icon, label] of LINKS) {
+    const a = link('fx-ico', href[key], null);
+    if (!a) continue;
+    a.setAttribute('aria-label', label);
+    a.title = label;
+    // Fundable's own mark is the bundled PNG; the rest are inline brand SVGs.
+    a.append(key === 'fundable' ? Object.assign(el('img', 'fx-ico-img'), { src: 'icons/icon128.png', alt: '' }) : svgIcon(icon, 'fx-ico-svg'));
+    row.append(a);
+  }
+  return row.childNodes.length ? row : null;
 }
 
 function tiles(card) {
@@ -186,7 +271,6 @@ function tiles(card) {
     // these two labels are the only ones that can ever read "1 rounds".
     [stats.num_funding_rounds === 1 ? 'Funding round' : 'Funding rounds', count(stats.num_funding_rounds)],
     [stats.num_investors === 1 ? 'Investor' : 'Investors', count(stats.num_investors)],
-    ['Employees', count(stats.num_employees)],
   ].filter(([, value]) => value);
   if (!rows.length) return null;
 
@@ -281,7 +365,7 @@ function investors(card) {
 }
 
 export function renderCard(card) {
-  return [header, chips, tiles, round, investors]
+  return [header, metaPills, links, tiles, round, investors]
     .map((section) => section(card))
     .filter(Boolean);
 }

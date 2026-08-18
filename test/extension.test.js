@@ -403,20 +403,23 @@ const FULL = {
 
 test('a full card renders every section', () => {
   const node = render(FULL);
-  for (const cls of ['fx-header', 'fx-chips', 'fx-tiles', 'fx-round', 'fx-investors']) {
+  for (const cls of ['fx-header', 'fx-metapills', 'fx-links', 'fx-tiles', 'fx-round', 'fx-investors']) {
     assert.ok(node.querySelector(`.${cls}`), `missing .${cls}`);
   }
   assert.equal(node.querySelector('.fx-name').textContent, 'Wealthsimple');
-  assert.equal(node.querySelector('.fx-meta').textContent, 'Toronto, Canada · Private');
+  // Location · status ride in meta pills; headcount is the third (tested on its own below).
+  const pills = [...node.querySelectorAll('.fx-pill-text')].map((p) => p.textContent);
+  assert.deepEqual(pills, ['Toronto, Canada', 'Private', '501–1K']);
   assert.equal(node.querySelector('.fx-logo').getAttribute('src'), FULL.logo);
   // The top-right brand mark links to this company's own Fundable page.
   assert.equal(node.querySelector('.fx-brand').href, 'https://www.tryfundable.ai/company/wealthsimple');
 });
 
-// FULL has a website, a linkedin and a guru_permalink but null twitter, so the
-// Fundable chip (built from the permalink) stands in for the dropped Crunchbase.
-test('only non-null link chips render', () => {
-  const labels = [...render(FULL).querySelectorAll('.fx-chip')].map((c) => c.textContent);
+// FULL has a website, a linkedin and a guru_permalink but null twitter/facebook, so
+// the Fundable link (built from the permalink) stands in for the dropped Crunchbase.
+// Links render as icon anchors now, identified by their aria-label.
+test('only non-null links render, as labelled icon anchors', () => {
+  const labels = [...render(FULL).querySelectorAll('.fx-ico')].map((a) => a.getAttribute('aria-label'));
   assert.deepEqual(labels, ['Website', 'LinkedIn', 'Fundable']);
 });
 
@@ -435,25 +438,26 @@ test('tiles render only the stats that have values', () => {
     'Valuation · May 2021',
     'Funding rounds',
     'Investors',
-    'Employees',
   ]);
   const values = [...render(FULL).querySelectorAll('.fx-tile-value')].map((t) => t.textContent);
-  assert.deepEqual(values, ['$900M', '$610M', '$4B', '9', '21', '501-1000']);
+  assert.deepEqual(values, ['$900M', '$610M', '$4B', '9', '21']);
 });
 
-// Every real company returns num_employees as a bucket string. A numeric-only
-// count() dropped the tile silently in production while the fixture's plain
-// number kept the suite green, so both shapes are pinned here.
-test('a headcount bucket renders, and a numeric count is still formatted', () => {
-  const bucket = (employees) => {
+// Every real company returns num_employees as a bucket string. Headcount is a
+// meta pill now — abbreviated the way Fundable's own card shows it ("501–1K"),
+// not a stat tile. A numeric-only count() dropped it silently in production while
+// the fixture's plain number kept the suite green, so both shapes are pinned here.
+test('a headcount bucket renders in the meta pill, abbreviated', () => {
+  // The headcount pill is the one carrying digits — region and status never do.
+  const headcount = (employees) => {
     const card = { ...FULL, stats: { ...FULL.stats, num_employees: employees } };
-    const tiles = [...render(card).querySelectorAll('.fx-tile')];
-    return tiles.find((t) => t.querySelector('.fx-tile-label').textContent === 'Employees');
+    const pills = [...render(card).querySelectorAll('.fx-pill-text')].map((p) => p.textContent);
+    return pills.find((t) => /\d/.test(t));
   };
-  assert.equal(bucket('5001-10000').querySelector('.fx-tile-value').textContent, '5001-10000');
-  assert.equal(bucket(1200).querySelector('.fx-tile-value').textContent, '1,200');
-  assert.equal(bucket('   '), undefined, 'a blank bucket hides the tile');
-  assert.equal(bucket(null), undefined, 'a missing headcount hides the tile');
+  assert.equal(headcount('5001-10000'), '5K–10K');
+  assert.equal(headcount(1200), '1.2K');
+  assert.equal(headcount('   '), undefined, 'a blank bucket drops the pill');
+  assert.equal(headcount(null), undefined, 'a missing headcount drops the pill');
 });
 
 test('the round block names the type, amount, date and source', () => {
@@ -523,7 +527,7 @@ test('a long investor list previews the first few behind a Show more button', ()
 test('every section disappears when its data is missing', () => {
   const node = render({ name: 'Ghost' });
   assert.equal(node.querySelector('.fx-name').textContent, 'Ghost');
-  for (const cls of ['fx-logo', 'fx-meta', 'fx-chips', 'fx-tiles', 'fx-round', 'fx-investors']) {
+  for (const cls of ['fx-logo', 'fx-metapills', 'fx-links', 'fx-tiles', 'fx-round', 'fx-investors']) {
     assert.equal(node.querySelector(`.${cls}`), null, `.${cls} should not render`);
   }
 });
@@ -592,7 +596,10 @@ test('a non-http href is dropped rather than made clickable', () => {
     },
     latest_deal: { type: 'seed', article_url: 'javascript:alert(1)' },
   });
-  assert.deepEqual([...node.querySelectorAll('.fx-chip')].map((c) => c.textContent), ['Twitter']);
+  assert.deepEqual(
+    [...node.querySelectorAll('.fx-ico')].map((a) => a.getAttribute('aria-label')),
+    ['Twitter'],
+  );
   assert.equal(node.querySelector('.fx-round-source'), null, 'a hostile source link hides itself');
   assert.doesNotMatch(node.innerHTML, /javascript:|data:text/i);
 });
