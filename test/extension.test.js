@@ -415,12 +415,12 @@ test('a full card renders every section', () => {
   assert.equal(node.querySelector('.fx-brand').href, 'https://www.tryfundable.ai/company/wealthsimple');
 });
 
-// FULL has a website, a linkedin and a guru_permalink but null twitter/facebook, so
-// the Fundable link (built from the permalink) stands in for the dropped Crunchbase.
-// Links render as icon anchors now, identified by their aria-label.
+// FULL has website, linkedin, crunchbase and a guru_permalink but null
+// twitter/facebook, so the row renders exactly those four, in LINKS order. Links
+// are icon anchors now, identified by their aria-label.
 test('only non-null links render, as labelled icon anchors', () => {
   const labels = [...render(FULL).querySelectorAll('.fx-ico')].map((a) => a.getAttribute('aria-label'));
-  assert.deepEqual(labels, ['Website', 'LinkedIn', 'Fundable']);
+  assert.deepEqual(labels, ['Website', 'LinkedIn', 'Crunchbase', 'Fundable']);
 });
 
 test('links open in a new tab without leaking the referrer window', () => {
@@ -598,7 +598,7 @@ test('a non-http href is dropped rather than made clickable', () => {
   });
   assert.deepEqual(
     [...node.querySelectorAll('.fx-ico')].map((a) => a.getAttribute('aria-label')),
-    ['Twitter'],
+    ['X'],
   );
   assert.equal(node.querySelector('.fx-round-source'), null, 'a hostile source link hides itself');
   assert.doesNotMatch(node.innerHTML, /javascript:|data:text/i);
