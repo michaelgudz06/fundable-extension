@@ -131,8 +131,6 @@ a {
   width: 40px;
   height: 40px;
   border-radius: 9px;
-  background: var(--fx-surface);
-  border: 1px solid var(--fx-line);
   object-fit: contain;
 }
 
@@ -208,13 +206,13 @@ a {
   height: 18px;
 }
 
-/* The Fundable mark is a full-colour PNG, so the row's currentColor does not
-   tint it; a hairline keeps its white ground from vanishing into the card. */
+/* The Fundable mark is a colour PNG — a green Möbius on transparent — so the
+   row's currentColor does not tint it. It reads green among the muted line
+   marks, which is intended: it is the one brand-coloured glyph in the row. */
 .fx-ico-img {
   display: block;
   width: 18px;
   height: 18px;
-  border-radius: 4px;
 }
 
 /* Two dividers, not four. The card has three zones — identity, stats, and the
@@ -342,8 +340,6 @@ a {
   width: 22px;
   height: 22px;
   border-radius: 6px;
-  background: var(--fx-surface);
-  border: 1px solid var(--fx-line);
   object-fit: contain;
 }
 

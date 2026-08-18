@@ -480,6 +480,48 @@ test('failures pass the proxy error code through, falling back to unavailable', 
   }
 });
 
+// The click that opens the overlay warms the card in the worker, so the popup's
+// lookup — arriving from the overlay iframe with sender.tab set to the host tab —
+// is served from that in-flight prefetch, not a second round-trip.
+test('a click warms the card and the matching lookup reuses it', async () => {
+  let companyFetches = 0;
+  route = (url) => {
+    if (url.includes('/api/company')) return companyFetches++, body(200, structuredClone(CARD));
+    return bytes('image/png', 1); // logos
+  };
+  await clickListener({ id: 99, url: 'https://wealthsimple.com/en-ca' });
+  await Promise.resolve(); // let the prefetch reach its fetch
+
+  const res = await ask(
+    { type: 'lookup', identifier: { kind: 'domain', value: 'wealthsimple.com' } },
+    { id: chrome.runtime.id, tab: { id: 99 } },
+  );
+  assert.equal(res.found, true);
+  assert.equal(companyFetches, 1, 'the lookup reused the prefetch instead of fetching the company again');
+});
+
+// A prefetch is a per-tab, per-company hint, not a blanket cache: a lookup for a
+// different company (the tab navigated after the click) or from a tab that was
+// never warmed must go fresh, never be handed the warmed card.
+test('a prefetch is only served for the same tab and the same company', async () => {
+  route = (url) =>
+    url.includes('/api/company') ? body(200, structuredClone({ ...CARD, name: 'Fresh' })) : bytes('image/png', 1);
+  await clickListener({ id: 100, url: 'https://wealthsimple.com/' });
+  await Promise.resolve();
+
+  // Same tab, different company -> fresh (not the warmed wealthsimple card).
+  const other = await ask(
+    { type: 'lookup', identifier: { kind: 'domain', value: 'stripe.com' } },
+    { id: chrome.runtime.id, tab: { id: 100 } },
+  );
+  assert.equal(other.card.name, 'Fresh');
+
+  // No sender.tab (as under test without a host frame) -> never matches a warm.
+  route = () => body(200, structuredClone({ ...CARD, name: 'Untabbed' }));
+  const untabbed = await ask({ type: 'lookup', identifier: { kind: 'domain', value: 'wealthsimple.com' } });
+  assert.equal(untabbed.card.name, 'Untabbed');
+});
+
 // ---------------------------------------------------------------------------
 // card -> DOM
 // ---------------------------------------------------------------------------

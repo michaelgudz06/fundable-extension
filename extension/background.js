@@ -23,6 +23,31 @@ const ASSET_TIMEOUT_MS = 4000;
 const respond = (work, sendResponse) =>
   work.then(sendResponse, () => sendResponse({ error: 'unavailable' }));
 
+// A click both mounts the overlay and warms its card. The slow part of an open is
+// the proxy round-trip; onClicked already has the tab's URL, so start the lookup
+// now — in parallel with the iframe booting — and let the popup's `lookup` message
+// consume the in-flight result instead of opening a second round-trip. This runs
+// only on the click that already grants activeTab, never on page load, so it adds
+// no per-page traffic or credit spend — it just moves the same one lookup earlier.
+// ponytail: 60s per-tab TTL; a close-click after it expires re-warms once (cheap,
+// the proxy caches cards 24h). Keyed by tab AND identifier so a tab that navigated
+// to another company after the click is never handed the previous card.
+const PREFETCH_TTL_MS = 60_000;
+const prefetches = new Map(); // tabId -> { key, promise }
+
+function warm(tab) {
+  const id = resolveIdentifier(tab.url);
+  if (!id) return;
+  const key = `${id.kind}:${id.value}`;
+  if (prefetches.get(tab.id)?.key === key) return; // already warming this company
+  const entry = { key, promise: lookup(id).catch(() => ({ error: 'unavailable' })) };
+  prefetches.set(tab.id, entry);
+  const timer = setTimeout(() => {
+    if (prefetches.get(tab.id) === entry) prefetches.delete(tab.id);
+  }, PREFETCH_TTL_MS);
+  timer.unref?.(); // node holds the process open for a pending timer; a worker has no unref
+}
+
 // Clicking the toolbar icon toggles the overlay on the active tab. There is no
 // default_popup, so onClicked fires. activeTab (granted by the click) is what lets
 // executeScript reach just this tab with no broad host permission; inject.js does
@@ -33,6 +58,7 @@ chrome.action.onClicked.addListener((tab) => {
   // rather than surfacing an error the user cannot act on.
   if (!tab.id || !/^https?:\/\//i.test(tab.url ?? '')) return;
   chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['inject.js'] }).catch(() => {});
+  warm(tab);
 });
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -46,7 +72,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
   if (msg?.type === 'lookup') {
-    respond(lookup(msg.identifier), sendResponse);
+    // Serve the click-time prefetch when it is for this tab and still the same
+    // company; otherwise (a different tab, a navigation, an expired warm) look it
+    // up fresh. sender.tab is the host tab the overlay iframe lives in.
+    const key = `${msg.identifier.kind}:${msg.identifier.value}`;
+    const warmed = prefetches.get(sender.tab?.id);
+    respond(warmed?.key === key ? warmed.promise : lookup(msg.identifier), sendResponse);
     return true;
   }
 });
